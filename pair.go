@@ -81,6 +81,11 @@ func (cli *Client) makeQRData(ref string) string {
 	noise := base64.StdEncoding.EncodeToString(cli.Store.NoiseKey.Pub[:])
 	identity := base64.StdEncoding.EncodeToString(cli.Store.IdentityKey.Pub[:])
 	adv := base64.StdEncoding.EncodeToString(cli.Store.AdvSecretKey)
+
+	// Debug: Log the identity key being used in the QR code
+	cli.Log.Debugf("makeQRData: identity key hex: %x", cli.Store.IdentityKey.Pub[:])
+	cli.Log.Debugf("makeQRData: noise key hex: %x", cli.Store.NoiseKey.Pub[:])
+
 	return strings.Join([]string{ref, noise, identity, adv}, ",")
 }
 
