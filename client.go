@@ -160,6 +160,13 @@ type Client struct {
 	// If this callback is set, it will be used instead of the local identity key for device signature generation.
 	RelaySignCallback func(message []byte) ([64]byte, error)
 
+	// RelayMessageCallback is called in relay mode when an encrypted message is received.
+	// The callback receives the parsed message info and the raw binary node.
+	// If it returns true, the message was handled by the relay and normal decryption is skipped.
+	// If it returns false (or callback is nil), normal decryption proceeds.
+	// This allows relay mode to forward encrypted blobs to external clients without decryption.
+	RelayMessageCallback func(ctx context.Context, info *types.MessageInfo, node *waBinary.Node) bool
+
 	// GetClientPayload is called to get the client payload for connecting to the server.
 	// This should NOT be used for WhatsApp (to change the OS name, update fields in store.BaseClientPayload directly).
 	GetClientPayload func() *waWa6.ClientPayload

@@ -61,6 +61,12 @@ func (cli *Client) handleEncryptedMessage(ctx context.Context, node *waBinary.No
 			defer cli.maybeDeferredAck(ctx, node)(&cancelled)
 			cancelled = cli.handlePlaintextMessage(ctx, info, node)
 		} else {
+			// In relay mode, allow intercepting messages before decryption.
+			// If the callback handles the message (returns true), skip normal decryption.
+			if cli.RelayMessageCallback != nil && cli.RelayMessageCallback(ctx, info, node) {
+				cli.Log.Debugf("Message intercepted by relay callback, skipping decryption")
+				return
+			}
 			cli.decryptMessages(ctx, info, node)
 		}
 	}
