@@ -136,14 +136,43 @@ func (c *Container) scanDevice(row dbutil.Scannable) (*store.Device, error) {
 		&device.Platform, &device.BusinessName, &device.PushName, &fbUUID, &device.LIDMigrationTimestamp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan session: %w", err)
-	} else if len(noisePriv) != 32 || len(identityPriv) != 32 || len(preKeyPriv) != 32 || len(preKeySig) != 64 {
-		return nil, ErrInvalidLength
 	}
 
+	// NoiseKey is REQUIRED - it's the backend's transport encryption key for the Noise Protocol
+	// handshake with WhatsApp servers. This key belongs to the backend, not the external client.
+	if len(noisePriv) != 32 {
+		return nil, ErrInvalidLength
+	}
 	device.NoiseKey = keys.NewKeyPairFromPrivateKey(*(*[32]byte)(noisePriv))
-	device.IdentityKey = keys.NewKeyPairFromPrivateKey(*(*[32]byte)(identityPriv))
-	device.SignedPreKey.KeyPair = *keys.NewKeyPairFromPrivateKey(*(*[32]byte)(preKeyPriv))
-	device.SignedPreKey.Signature = (*[64]byte)(preKeySig)
+
+	// IdentityKey and SignedPreKey private keys may be NULL in E2EE relay mode where the
+	// external client (iOS) owns these keys. We still create the structs so that ApplyToDevice
+	// can set the public keys received from the external client.
+	if len(identityPriv) > 0 {
+		if len(identityPriv) != 32 {
+			return nil, ErrInvalidLength
+		}
+		device.IdentityKey = keys.NewKeyPairFromPrivateKey(*(*[32]byte)(identityPriv))
+	} else {
+		// Create empty IdentityKey struct for relay mode - ApplyToDevice will set the public key
+		device.IdentityKey = &keys.KeyPair{}
+	}
+
+	if len(preKeyPriv) > 0 {
+		if len(preKeyPriv) != 32 {
+			return nil, ErrInvalidLength
+		}
+		device.SignedPreKey.KeyPair = *keys.NewKeyPairFromPrivateKey(*(*[32]byte)(preKeyPriv))
+	}
+	// Note: SignedPreKey struct is already created at line 127, so Pub can be set by ApplyToDevice
+
+	if len(preKeySig) > 0 {
+		if len(preKeySig) != 64 {
+			return nil, ErrInvalidLength
+		}
+		device.SignedPreKey.Signature = (*[64]byte)(preKeySig)
+	}
+
 	device.Account = &account
 	device.FacebookUUID = fbUUID.UUID
 
@@ -243,15 +272,46 @@ func (c *Container) Close() error {
 	return nil
 }
 
+// ErrNoiseKeyRequired is returned when trying to save a device without a NoiseKey.
+// The NoiseKey is the backend's transport encryption key and is always required.
+var ErrNoiseKeyRequired = errors.New("device NoiseKey with private key is required for persistence")
+
 // PutDevice stores the given device in this database. This should be called through Device.Save()
 // (which usually doesn't need to be called manually, as the library does that automatically when relevant).
 func (c *Container) PutDevice(ctx context.Context, device *store.Device) error {
 	if device.ID == nil {
 		return ErrDeviceIDMustBeSet
 	}
+
+	// NoiseKey is REQUIRED - it's the backend's transport encryption key for the Noise Protocol.
+	// This key belongs to the backend and must always be present with a private key.
+	if device.NoiseKey == nil || device.NoiseKey.Priv == nil {
+		return ErrNoiseKeyRequired
+	}
+	noiseKeyPriv := device.NoiseKey.Priv[:]
+
+	// IdentityKey and SignedPreKey private keys may be nil in E2EE relay mode
+	// where the external client (iOS) owns these keys.
+	var identityKeyPriv, signedPreKeyPriv []byte
+	if device.IdentityKey != nil && device.IdentityKey.Priv != nil {
+		identityKeyPriv = device.IdentityKey.Priv[:]
+	}
+
+	var signedPreKeyID uint32
+	var signedPreKeySig []byte
+	if device.SignedPreKey != nil {
+		if device.SignedPreKey.Priv != nil {
+			signedPreKeyPriv = device.SignedPreKey.Priv[:]
+		}
+		signedPreKeyID = device.SignedPreKey.KeyID
+		if device.SignedPreKey.Signature != nil {
+			signedPreKeySig = device.SignedPreKey.Signature[:]
+		}
+	}
+
 	_, err := c.db.Exec(ctx, insertDeviceQuery,
-		device.ID, device.LID, device.RegistrationID, device.NoiseKey.Priv[:], device.IdentityKey.Priv[:],
-		device.SignedPreKey.Priv[:], device.SignedPreKey.KeyID, device.SignedPreKey.Signature[:],
+		device.ID, device.LID, device.RegistrationID, noiseKeyPriv, identityKeyPriv,
+		signedPreKeyPriv, signedPreKeyID, signedPreKeySig,
 		device.AdvSecretKey, device.Account.Details, device.Account.AccountSignature, device.Account.AccountSignatureKey, device.Account.DeviceSignature,
 		device.Platform, device.BusinessName, device.PushName, uuid.NullUUID{UUID: device.FacebookUUID, Valid: device.FacebookUUID != uuid.Nil},
 		device.LIDMigrationTimestamp,

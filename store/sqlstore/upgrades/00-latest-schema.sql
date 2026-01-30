@@ -1,4 +1,4 @@
--- v0 -> v11 (compatible with v8+): Latest schema
+-- v0 -> v13 (compatible with v8+): Latest schema
 CREATE TABLE whatsmeow_device (
 	jid TEXT PRIMARY KEY,
 	lid TEXT,
@@ -7,12 +7,14 @@ CREATE TABLE whatsmeow_device (
 
 	registration_id BIGINT NOT NULL CHECK ( registration_id >= 0 AND registration_id < 4294967296 ),
 
+	-- noise_key is the backend's transport encryption key for Noise Protocol - always required
 	noise_key    bytea NOT NULL CHECK ( length(noise_key) = 32 ),
-	identity_key bytea NOT NULL CHECK ( length(identity_key) = 32 ),
+	-- identity_key and signed_pre_key may be NULL in E2EE relay mode (iOS holds private keys)
+	identity_key bytea CHECK ( identity_key IS NULL OR length(identity_key) = 32 ),
 
-	signed_pre_key     bytea   NOT NULL CHECK ( length(signed_pre_key) = 32 ),
+	signed_pre_key     bytea   CHECK ( signed_pre_key IS NULL OR length(signed_pre_key) = 32 ),
 	signed_pre_key_id  INTEGER NOT NULL CHECK ( signed_pre_key_id >= 0 AND signed_pre_key_id < 16777216 ),
-	signed_pre_key_sig bytea   NOT NULL CHECK ( length(signed_pre_key_sig) = 64 ),
+	signed_pre_key_sig bytea   CHECK ( signed_pre_key_sig IS NULL OR length(signed_pre_key_sig) = 64 ),
 
 	adv_key             bytea NOT NULL,
 	adv_details         bytea NOT NULL,
