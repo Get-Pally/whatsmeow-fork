@@ -154,6 +154,12 @@ type Client struct {
 	// the client will disconnect.
 	PrePairCallback func(jid types.JID, platform, businessName string) bool
 
+	// RelaySignCallback is called during pairing in relay mode when an external entity owns the identity key.
+	// The callback receives the message to sign (prefix + details + public key + account signature key)
+	// and must return a 64-byte Ed25519 signature created with the external identity private key.
+	// If this callback is set, it will be used instead of the local identity key for device signature generation.
+	RelaySignCallback func(message []byte) ([64]byte, error)
+
 	// GetClientPayload is called to get the client payload for connecting to the server.
 	// This should NOT be used for WhatsApp (to change the OS name, update fields in store.BaseClientPayload directly).
 	GetClientPayload func() *waWa6.ClientPayload
@@ -506,6 +512,9 @@ func (cli *Client) unlockedConnect(ctx context.Context) error {
 	client := cli.websocketHTTP
 	if cli.Store.ID == nil {
 		client = cli.preLoginHTTP
+		cli.Log.Infof("E2EE connect: using preLoginHTTP (pairing mode), device.ID is nil")
+	} else {
+		cli.Log.Infof("E2EE connect: using websocketHTTP (logged-in mode), device.ID=%v", cli.Store.ID)
 	}
 	fs := socket.NewFrameSocket(cli.Log.Sub("Socket"), client)
 	if cli.MessengerConfig != nil {

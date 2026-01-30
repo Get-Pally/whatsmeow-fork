@@ -47,7 +47,11 @@ func (cli *Client) handleIQ(ctx context.Context, node *waBinary.Node) {
 }
 
 func (cli *Client) handlePairDevice(ctx context.Context, node *waBinary.Node) {
+	cli.Log.Infof("E2EE handlePairDevice: received pair-device request from WhatsApp")
 	pairDevice := node.GetChildByTag("pair-device")
+	refCount := len(pairDevice.GetChildren())
+	cli.Log.Debugf("E2EE handlePairDevice: %d ref codes received", refCount)
+
 	err := cli.sendNode(ctx, waBinary.Node{
 		Tag: "iq",
 		Attrs: waBinary.Attrs{
@@ -74,6 +78,7 @@ func (cli *Client) handlePairDevice(ctx context.Context, node *waBinary.Node) {
 		evt.Codes = append(evt.Codes, cli.makeQRData(string(content)))
 	}
 
+	cli.Log.Infof("E2EE handlePairDevice: dispatching %d QR codes to event handlers", len(evt.Codes))
 	cli.dispatchEvent(evt)
 }
 
@@ -81,14 +86,25 @@ func (cli *Client) makeQRData(ref string) string {
 	noise := base64.StdEncoding.EncodeToString(cli.Store.NoiseKey.Pub[:])
 	identity := base64.StdEncoding.EncodeToString(cli.Store.IdentityKey.Pub[:])
 	adv := base64.StdEncoding.EncodeToString(cli.Store.AdvSecretKey)
+
+	// Log all keys being used in the QR code (Info level for visibility)
+	cli.Log.Infof("E2EE makeQRData: QR code components:")
+	cli.Log.Infof("E2EE makeQRData:   identity key hex: %x", cli.Store.IdentityKey.Pub[:])
+	cli.Log.Infof("E2EE makeQRData:   noise key hex: %x", cli.Store.NoiseKey.Pub[:])
+	cli.Log.Infof("E2EE makeQRData:   adv secret key hex: %x", cli.Store.AdvSecretKey)
+	cli.Log.Infof("E2EE makeQRData:   registration ID: %d", cli.Store.RegistrationID)
+	cli.Log.Debugf("E2EE makeQRData:   ref prefix: %s...", ref[:min(20, len(ref))])
+
 	return strings.Join([]string{ref, noise, identity, adv}, ",")
 }
 
 func (cli *Client) handlePairSuccess(ctx context.Context, node *waBinary.Node) {
+	cli.Log.Infof("E2EE handlePairSuccess: received pair-success message")
 	id := node.Attrs["id"].(string)
 	pairSuccess := node.GetChildByTag("pair-success")
 
 	deviceIdentityBytes, _ := pairSuccess.GetChildByTag("device-identity").Content.([]byte)
+	cli.Log.Infof("E2EE handlePairSuccess: device identity bytes len=%d", len(deviceIdentityBytes))
 	businessName, _ := pairSuccess.GetChildByTag("biz").Attrs["name"].(string)
 	jid, _ := pairSuccess.GetChildByTag("device").Attrs["jid"].(types.JID)
 	lid, _ := pairSuccess.GetChildByTag("device").Attrs["lid"].(types.JID)
@@ -142,12 +158,31 @@ func (cli *Client) handlePair(ctx context.Context, deviceIdentityBytes []byte, r
 		return &PairProtoError{"failed to parse device identity details in pair success message", err}
 	}
 
+	cli.Log.Infof("E2EE handlePair: verifying account signature with identity key hex: %x", cli.Store.IdentityKey.Pub[:8])
 	if !verifyAccountSignature(&deviceIdentity, cli.Store.IdentityKey, deviceIdentityDetails.GetDeviceType() == waAdv.ADVEncryptionType_HOSTED) {
+		cli.Log.Errorf("E2EE handlePair: account signature verification FAILED")
 		cli.sendPairError(ctx, reqID, 401, "signature-mismatch")
 		return ErrPairInvalidDeviceSignature
 	}
+	cli.Log.Infof("E2EE handlePair: account signature verification PASSED")
 
-	deviceIdentity.DeviceSignature = generateDeviceSignature(&deviceIdentity, cli.Store.IdentityKey)[:]
+	// Generate device signature - use relay callback if available (for external identity key)
+	cli.Log.Infof("E2EE handlePair: RelaySignCallback is set: %v", cli.RelaySignCallback != nil)
+	if cli.RelaySignCallback != nil {
+		// Build the message that needs to be signed (same format as generateDeviceSignature)
+		message := concatBytes(AdvDeviceSignaturePrefix, deviceIdentity.Details, cli.Store.IdentityKey.Pub[:], deviceIdentity.AccountSignatureKey)
+		cli.Log.Infof("E2EE relay: requesting external signature for device identity (message len: %d, identity key hex: %x)", len(message), cli.Store.IdentityKey.Pub[:8])
+		signature, err := cli.RelaySignCallback(message)
+		if err != nil {
+			cli.Log.Errorf("E2EE relay: failed to get external signature: %v", err)
+			cli.sendPairError(ctx, reqID, 500, "internal-error")
+			return &PairProtoError{"failed to get relay signature from external signer", err}
+		}
+		cli.Log.Infof("E2EE relay: received external signature successfully (sig len: %d)", len(signature))
+		deviceIdentity.DeviceSignature = signature[:]
+	} else {
+		deviceIdentity.DeviceSignature = generateDeviceSignature(&deviceIdentity, cli.Store.IdentityKey)[:]
+	}
 
 	if cli.PrePairCallback != nil && !cli.PrePairCallback(jid, platform, businessName) {
 		cli.sendPairError(ctx, reqID, 500, "internal-error")

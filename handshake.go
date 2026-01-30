@@ -28,6 +28,11 @@ var WACertPubKey = [...]byte{0x14, 0x23, 0x75, 0x57, 0x4d, 0xa, 0x58, 0x71, 0x66
 
 // doHandshake implements the Noise_XX_25519_AESGCM_SHA256 handshake for the WhatsApp web API.
 func (cli *Client) doHandshake(ctx context.Context, fs *socket.FrameSocket, ephemeralKP keys.KeyPair) error {
+	cli.Log.Infof("E2EE handshake: starting Noise_XX_25519_AESGCM_SHA256")
+	cli.Log.Debugf("E2EE handshake: ephemeral pub hex: %x", ephemeralKP.Pub[:])
+	cli.Log.Debugf("E2EE handshake: noise pub hex: %x", cli.Store.NoiseKey.Pub[:])
+	cli.Log.Debugf("E2EE handshake: identity pub hex: %x", cli.Store.IdentityKey.Pub[:])
+
 	nh := socket.NewNoiseHandshake()
 	nh.Start(socket.NoiseStartPattern, fs.Header)
 	nh.Authenticate(ephemeralKP.Pub[:])
@@ -39,6 +44,7 @@ func (cli *Client) doHandshake(ctx context.Context, fs *socket.FrameSocket, ephe
 	if err != nil {
 		return fmt.Errorf("failed to marshal handshake message: %w", err)
 	}
+	cli.Log.Debugf("E2EE handshake: sending ClientHello (%d bytes)", len(data))
 	err = fs.SendFrame(data)
 	if err != nil {
 		return fmt.Errorf("failed to send handshake message: %w", err)
@@ -46,6 +52,7 @@ func (cli *Client) doHandshake(ctx context.Context, fs *socket.FrameSocket, ephe
 	var resp []byte
 	select {
 	case resp = <-fs.Frames:
+		cli.Log.Debugf("E2EE handshake: received ServerHello (%d bytes)", len(resp))
 	case <-time.After(NoiseHandshakeResponseTimeout):
 		return fmt.Errorf("timed out waiting for handshake response")
 	}
@@ -58,8 +65,11 @@ func (cli *Client) doHandshake(ctx context.Context, fs *socket.FrameSocket, ephe
 	serverStaticCiphertext := handshakeResponse.GetServerHello().GetStatic()
 	certificateCiphertext := handshakeResponse.GetServerHello().GetPayload()
 	if len(serverEphemeral) != 32 || serverStaticCiphertext == nil || certificateCiphertext == nil {
+		cli.Log.Errorf("E2EE handshake: missing parts - ephemeral=%d, static=%v, cert=%v",
+			len(serverEphemeral), serverStaticCiphertext != nil, certificateCiphertext != nil)
 		return fmt.Errorf("missing parts of handshake response")
 	}
+	cli.Log.Debugf("E2EE handshake: server ephemeral hex: %x", serverEphemeral)
 	serverEphemeralArr := *(*[32]byte)(serverEphemeral)
 
 	nh.Authenticate(serverEphemeral)
@@ -99,10 +109,18 @@ func (cli *Client) doHandshake(ctx context.Context, fs *socket.FrameSocket, ephe
 		clientPayload = cli.Store.GetClientPayload()
 	}
 
+	// Log client payload details for debugging
+	if clientPayload != nil {
+		cli.Log.Debugf("E2EE handshake: client payload - platform=%v, device=%s",
+			clientPayload.GetUserAgent().GetPlatform(),
+			clientPayload.GetUserAgent().GetDevice())
+	}
+
 	clientFinishPayloadBytes, err := proto.Marshal(clientPayload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal client finish payload: %w", err)
 	}
+	cli.Log.Debugf("E2EE handshake: sending ClientFinish (%d bytes payload)", len(clientFinishPayloadBytes))
 	encryptedClientFinishPayload := nh.Encrypt(clientFinishPayloadBytes)
 	data, err = proto.Marshal(&waWa6.HandshakeMessage{
 		ClientFinish: &waWa6.HandshakeMessage_ClientFinish{
@@ -124,6 +142,7 @@ func (cli *Client) doHandshake(ctx context.Context, fs *socket.FrameSocket, ephe
 	}
 
 	cli.socket = ns
+	cli.Log.Infof("E2EE handshake: completed successfully")
 
 	return nil
 }

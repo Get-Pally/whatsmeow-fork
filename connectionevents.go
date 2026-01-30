@@ -22,6 +22,37 @@ func (cli *Client) handleStreamError(ctx context.Context, node *waBinary.Node) {
 	code, _ := node.Attrs["code"].(string)
 	conflict, _ := node.GetOptionalChildByTag("conflict")
 	conflictType := conflict.AttrGetter().OptionalString("type")
+
+	// Enhanced logging for E2EE relay debugging
+	cli.Log.Warnf("Stream error received: code=%s, conflictType=%s, deviceID=%v, fullNode=%s",
+		code, conflictType, cli.Store.ID, node.XMLString())
+
+	// Dump full device state for 500 errors (common during pairing issues)
+	if code == "500" {
+		cli.Log.Errorf("E2EE STREAM ERROR 500 - Full device state dump:")
+		cli.Log.Errorf("  Device ID: %v", cli.Store.ID)
+		cli.Log.Errorf("  LID: %v", cli.Store.LID)
+		cli.Log.Errorf("  Registration ID: %d", cli.Store.RegistrationID)
+		if cli.Store.IdentityKey != nil && cli.Store.IdentityKey.Pub != nil {
+			cli.Log.Errorf("  Identity key pub hex: %x", cli.Store.IdentityKey.Pub[:])
+			cli.Log.Errorf("  Identity key priv set: %v", cli.Store.IdentityKey.Priv != nil)
+		} else {
+			cli.Log.Errorf("  Identity key: NOT SET or nil")
+		}
+		if cli.Store.NoiseKey != nil && cli.Store.NoiseKey.Pub != nil {
+			cli.Log.Errorf("  Noise key pub hex: %x", cli.Store.NoiseKey.Pub[:])
+			cli.Log.Errorf("  Noise key priv set: %v", cli.Store.NoiseKey.Priv != nil)
+		} else {
+			cli.Log.Errorf("  Noise key: NOT SET or nil")
+		}
+		cli.Log.Errorf("  AdvSecretKey hex: %x", cli.Store.AdvSecretKey)
+		cli.Log.Errorf("  RelaySignCallback set: %v", cli.RelaySignCallback != nil)
+		cli.Log.Errorf("  Platform: %s", cli.Store.Platform)
+		cli.Log.Errorf("  BusinessName: %s", cli.Store.BusinessName)
+		cli.Log.Errorf("This error typically indicates WhatsApp rejected the pairing request.")
+		cli.Log.Errorf("Common causes: invalid identity key format, rate limiting, or account restrictions.")
+	}
+
 	switch {
 	case code == "515":
 		if cli.DisableLoginAutoReconnect {
