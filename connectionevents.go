@@ -215,8 +215,10 @@ func (cli *Client) handleConnectSuccess(ctx context.Context, node *waBinary.Node
 		} else if serverCount, err := cli.getServerPreKeyCount(ctx); err != nil {
 			cli.Log.Warnf("Failed to get number of prekeys on server: %v", err)
 		} else {
-			cli.Log.Debugf("Database has %d prekeys, server says we have %d", dbCount, serverCount)
+			cli.Log.Infof("Pre-key status: database has %d prekeys, server says we have %d (MinPreKeyCount=%d)", dbCount, serverCount, MinPreKeyCount)
 			if serverCount < MinPreKeyCount || dbCount < MinPreKeyCount {
+				cli.Log.Infof("Pre-key upload triggered: serverCount=%d < %d OR dbCount=%d < %d, initialUpload=%v",
+					serverCount, MinPreKeyCount, dbCount, MinPreKeyCount, dbCount == 0 && serverCount == 0)
 				cli.uploadPreKeys(ctx, dbCount == 0 && serverCount == 0)
 				sc, _ := cli.getServerPreKeyCount(ctx)
 				cli.Log.Debugf("Prekey count after upload: %d", sc)

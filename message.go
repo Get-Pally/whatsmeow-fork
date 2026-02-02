@@ -649,6 +649,16 @@ func padMessage(plaintext []byte) []byte {
 }
 
 func (cli *Client) handleSenderKeyDistributionMessage(ctx context.Context, chat, from types.JID, axolotlSKDM []byte) {
+	// In relay mode with external sender key management, forward SKDM to external client
+	// instead of processing internally. This enables true E2EE where the external client
+	// owns all keys and performs all decryption.
+	if cli.RelaySkdmCallback != nil {
+		cli.RelaySkdmCallback(ctx, chat, from, axolotlSKDM)
+		cli.Log.Debugf("Forwarded SKDM from %s for group %s to relay callback", from, chat)
+		return
+	}
+
+	// Normal mode: process SKDM internally
 	builder := groups.NewGroupSessionBuilder(cli.Store, pbSerializer)
 	senderKeyName := protocol.NewSenderKeyName(chat.String(), from.SignalAddress())
 	sdkMsg, err := protocol.NewSenderKeyDistributionMessageFromBytes(axolotlSKDM, pbSerializer.SenderKeyDistributionMessage)

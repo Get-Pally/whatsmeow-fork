@@ -167,6 +167,12 @@ type Client struct {
 	// This allows relay mode to forward encrypted blobs to external clients without decryption.
 	RelayMessageCallback func(ctx context.Context, info *types.MessageInfo, node *waBinary.Node) bool
 
+	// RelaySkdmCallback is called when a sender key distribution message is received in relay mode.
+	// The callback receives the group JID, sender JID, and raw SKDM bytes for forwarding to external
+	// clients that manage their own sender keys. If set, the SKDM is forwarded instead of being
+	// processed internally by whatsmeow. This enables true E2EE where external clients own all keys.
+	RelaySkdmCallback func(ctx context.Context, groupJid types.JID, senderJid types.JID, skdmBytes []byte)
+
 	// GetClientPayload is called to get the client payload for connecting to the server.
 	// This should NOT be used for WhatsApp (to change the OS name, update fields in store.BaseClientPayload directly).
 	GetClientPayload func() *waWa6.ClientPayload

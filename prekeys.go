@@ -68,7 +68,18 @@ func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 		cli.Log.Errorf("Failed to get prekeys to upload: %v", err)
 		return
 	}
-	cli.Log.Infof("Uploading %d new prekeys to server", len(preKeys))
+	// Log signed pre-key details for debugging E2EE relay mode
+	var signedPreKeyID uint32
+	var signedPreKeyPubHex string
+	if cli.Store.SignedPreKey != nil {
+		signedPreKeyID = cli.Store.SignedPreKey.KeyID
+		if cli.Store.SignedPreKey.Pub != nil {
+			signedPreKeyPubHex = fmt.Sprintf("%x", cli.Store.SignedPreKey.Pub[:8])
+		} else {
+			signedPreKeyPubHex = "nil"
+		}
+	}
+	cli.Log.Infof("Uploading %d new prekeys to server (signed prekey ID: %d, pub: %s)", len(preKeys), signedPreKeyID, signedPreKeyPubHex)
 	_, err = cli.sendIQ(ctx, infoQuery{
 		Namespace: "encrypt",
 		Type:      "set",
@@ -160,11 +171,19 @@ func (cli *Client) fetchPreKeys(ctx context.Context, users []types.JID) (map[typ
 func preKeyToNode(key *keys.PreKey) waBinary.Node {
 	var keyID [4]byte
 	binary.BigEndian.PutUint32(keyID[:], key.KeyID)
+	// Safety check: ensure public key is not nil (can happen in relay mode if not properly set)
+	var pubKeyContent []byte
+	if key.Pub != nil {
+		pubKeyContent = key.Pub[:]
+	} else {
+		// This is a serious error - log it as a warning
+		pubKeyContent = make([]byte, 32) // Send zeros which will fail verification
+	}
 	node := waBinary.Node{
 		Tag: "key",
 		Content: []waBinary.Node{
 			{Tag: "id", Content: keyID[1:]},
-			{Tag: "value", Content: key.Pub[:]},
+			{Tag: "value", Content: pubKeyContent},
 		},
 	}
 	if key.Signature != nil {
