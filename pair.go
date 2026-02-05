@@ -83,16 +83,25 @@ func (cli *Client) handlePairDevice(ctx context.Context, node *waBinary.Node) {
 }
 
 func (cli *Client) makeQRData(ref string) string {
+	// Validate required keys are set (in relay mode, external client must set public keys)
+	if cli.Store.NoiseKey == nil || cli.Store.NoiseKey.Pub == nil {
+		cli.Log.Errorf("E2EE makeQRData: NoiseKey.Pub is nil - cannot generate QR code")
+		return ""
+	}
+	if cli.Store.IdentityKey == nil || cli.Store.IdentityKey.Pub == nil {
+		cli.Log.Errorf("E2EE makeQRData: IdentityKey.Pub is nil - in relay mode, external client must set public keys before pairing")
+		return ""
+	}
 	noise := base64.StdEncoding.EncodeToString(cli.Store.NoiseKey.Pub[:])
 	identity := base64.StdEncoding.EncodeToString(cli.Store.IdentityKey.Pub[:])
 	adv := base64.StdEncoding.EncodeToString(cli.Store.AdvSecretKey)
 
-	// Log all keys being used in the QR code (Info level for visibility)
-	cli.Log.Infof("E2EE makeQRData: QR code components:")
-	cli.Log.Infof("E2EE makeQRData:   identity key hex: %x", cli.Store.IdentityKey.Pub[:])
-	cli.Log.Infof("E2EE makeQRData:   noise key hex: %x", cli.Store.NoiseKey.Pub[:])
-	cli.Log.Infof("E2EE makeQRData:   adv secret key hex: %x", cli.Store.AdvSecretKey)
-	cli.Log.Infof("E2EE makeQRData:   registration ID: %d", cli.Store.RegistrationID)
+	// Log key fingerprints for debugging (only first 8 bytes for security)
+	cli.Log.Debugf("E2EE makeQRData: QR code components:")
+	cli.Log.Debugf("E2EE makeQRData:   identity key prefix: %x", cli.Store.IdentityKey.Pub[:8])
+	cli.Log.Debugf("E2EE makeQRData:   noise key prefix: %x", cli.Store.NoiseKey.Pub[:8])
+	cli.Log.Debugf("E2EE makeQRData:   adv secret key prefix: %x", cli.Store.AdvSecretKey[:8])
+	cli.Log.Debugf("E2EE makeQRData:   registration ID: %d", cli.Store.RegistrationID)
 	cli.Log.Debugf("E2EE makeQRData:   ref prefix: %s...", ref[:min(20, len(ref))])
 
 	return strings.Join([]string{ref, noise, identity, adv}, ",")
@@ -158,7 +167,12 @@ func (cli *Client) handlePair(ctx context.Context, deviceIdentityBytes []byte, r
 		return &PairProtoError{"failed to parse device identity details in pair success message", err}
 	}
 
-	cli.Log.Infof("E2EE handlePair: verifying account signature with identity key hex: %x", cli.Store.IdentityKey.Pub[:8])
+	// Validate identity key is set (required for signature verification)
+	if cli.Store.IdentityKey == nil || cli.Store.IdentityKey.Pub == nil {
+		cli.sendPairError(ctx, reqID, 500, "internal-error")
+		return &PairProtoError{"IdentityKey.Pub is nil - in relay mode, external client must set public keys before pairing", nil}
+	}
+	cli.Log.Infof("E2EE handlePair: verifying account signature with identity key prefix: %x", cli.Store.IdentityKey.Pub[:8])
 	if !verifyAccountSignature(&deviceIdentity, cli.Store.IdentityKey, deviceIdentityDetails.GetDeviceType() == waAdv.ADVEncryptionType_HOSTED) {
 		cli.Log.Errorf("E2EE handlePair: account signature verification FAILED")
 		cli.sendPairError(ctx, reqID, 401, "signature-mismatch")
@@ -171,7 +185,7 @@ func (cli *Client) handlePair(ctx context.Context, deviceIdentityBytes []byte, r
 	if cli.RelaySignCallback != nil {
 		// Build the message that needs to be signed (same format as generateDeviceSignature)
 		message := concatBytes(AdvDeviceSignaturePrefix, deviceIdentity.Details, cli.Store.IdentityKey.Pub[:], deviceIdentity.AccountSignatureKey)
-		cli.Log.Infof("E2EE relay: requesting external signature for device identity (message len: %d, identity key hex: %x)", len(message), cli.Store.IdentityKey.Pub[:8])
+		cli.Log.Infof("E2EE relay: requesting external signature for device identity (message len: %d, identity key prefix: %x)", len(message), cli.Store.IdentityKey.Pub[:8])
 		signature, err := cli.RelaySignCallback(message)
 		if err != nil {
 			cli.Log.Errorf("E2EE relay: failed to get external signature: %v", err)

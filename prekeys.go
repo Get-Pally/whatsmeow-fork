@@ -80,6 +80,11 @@ func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 		}
 	}
 	cli.Log.Infof("Uploading %d new prekeys to server (signed prekey ID: %d, pub: %s)", len(preKeys), signedPreKeyID, signedPreKeyPubHex)
+	// Validate identity key is set (in relay mode, external client must set public keys)
+	if cli.Store.IdentityKey == nil || cli.Store.IdentityKey.Pub == nil {
+		cli.Log.Errorf("Cannot upload prekeys: IdentityKey.Pub is nil - in relay mode, external client must set public keys before use")
+		return
+	}
 	_, err = cli.sendIQ(ctx, infoQuery{
 		Namespace: "encrypt",
 		Type:      "set",
@@ -171,19 +176,16 @@ func (cli *Client) fetchPreKeys(ctx context.Context, users []types.JID) (map[typ
 func preKeyToNode(key *keys.PreKey) waBinary.Node {
 	var keyID [4]byte
 	binary.BigEndian.PutUint32(keyID[:], key.KeyID)
-	// Safety check: ensure public key is not nil (can happen in relay mode if not properly set)
-	var pubKeyContent []byte
-	if key.Pub != nil {
-		pubKeyContent = key.Pub[:]
-	} else {
-		// This is a serious error - log it as a warning
-		pubKeyContent = make([]byte, 32) // Send zeros which will fail verification
+	// In relay mode, public keys must be set by the external client before use.
+	// A nil public key indicates misconfiguration - panic early with a clear message.
+	if key.Pub == nil {
+		panic("preKeyToNode: public key is nil - relay mode may not be properly configured (external client must set public keys before use)")
 	}
 	node := waBinary.Node{
 		Tag: "key",
 		Content: []waBinary.Node{
 			{Tag: "id", Content: keyID[1:]},
-			{Tag: "value", Content: pubKeyContent},
+			{Tag: "value", Content: key.Pub[:]},
 		},
 	}
 	if key.Signature != nil {

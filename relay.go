@@ -86,6 +86,11 @@ func (cli *Client) SendRelayMessage(
 	preEncryptedPayload []byte,
 	opts RelayMessageOptions,
 ) (*RelayMessageResponse, error) {
+	// Validate recipient JID
+	if to.IsEmpty() {
+		return nil, fmt.Errorf("recipient JID is required")
+	}
+
 	// Validate encryption type
 	switch opts.EncryptionType {
 	case RelayEncryptionPreKey, RelayEncryptionNormal, RelayEncryptionSenderKey:
@@ -210,6 +215,16 @@ func (cli *Client) SendRelayGroupMessage(
 	opts RelayMessageOptions,
 	phash string,
 ) (*RelayMessageResponse, error) {
+	// Validate group JID
+	if groupJID.IsEmpty() {
+		return nil, fmt.Errorf("group JID is required")
+	}
+
+	// Validate payload
+	if len(preEncryptedPayload) == 0 {
+		return nil, fmt.Errorf("pre-encrypted payload cannot be empty")
+	}
+
 	// Force sender key encryption type for groups
 	if opts.EncryptionType != RelayEncryptionSenderKey {
 		opts.EncryptionType = RelayEncryptionSenderKey

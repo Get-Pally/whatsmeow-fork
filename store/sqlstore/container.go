@@ -227,6 +227,9 @@ func (c *Container) GetDevice(ctx context.Context, jid types.JID) (*store.Device
 }
 
 const (
+	// insertDeviceQuery upserts a device record. The ON CONFLICT clause updates ALL key fields
+	// to ensure that re-linking with new iOS keys properly updates the stored values.
+	// This is critical for E2EE relay mode where iOS may send new keys during re-linking.
 	insertDeviceQuery = `
 		INSERT INTO whatsmeow_device (jid, lid, registration_id, noise_key, identity_key,
 									  signed_pre_key, signed_pre_key_id, signed_pre_key_sig,
@@ -235,9 +238,21 @@ const (
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		ON CONFLICT (jid) DO UPDATE
 			SET lid=excluded.lid,
+				registration_id=excluded.registration_id,
+				noise_key=excluded.noise_key,
+				identity_key=excluded.identity_key,
+				signed_pre_key=excluded.signed_pre_key,
+				signed_pre_key_id=excluded.signed_pre_key_id,
+				signed_pre_key_sig=excluded.signed_pre_key_sig,
+				adv_key=excluded.adv_key,
+				adv_details=excluded.adv_details,
+				adv_account_sig=excluded.adv_account_sig,
+				adv_account_sig_key=excluded.adv_account_sig_key,
+				adv_device_sig=excluded.adv_device_sig,
 				platform=excluded.platform,
 				business_name=excluded.business_name,
 				push_name=excluded.push_name,
+				facebook_uuid=excluded.facebook_uuid,
 				lid_migration_ts=excluded.lid_migration_ts
 	`
 	deleteDeviceQuery = `DELETE FROM whatsmeow_device WHERE jid=$1`

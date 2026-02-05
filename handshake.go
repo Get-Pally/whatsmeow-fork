@@ -29,9 +29,15 @@ var WACertPubKey = [...]byte{0x14, 0x23, 0x75, 0x57, 0x4d, 0xa, 0x58, 0x71, 0x66
 // doHandshake implements the Noise_XX_25519_AESGCM_SHA256 handshake for the WhatsApp web API.
 func (cli *Client) doHandshake(ctx context.Context, fs *socket.FrameSocket, ephemeralKP keys.KeyPair) error {
 	cli.Log.Infof("E2EE handshake: starting Noise_XX_25519_AESGCM_SHA256")
-	cli.Log.Debugf("E2EE handshake: ephemeral pub hex: %x", ephemeralKP.Pub[:])
-	cli.Log.Debugf("E2EE handshake: noise pub hex: %x", cli.Store.NoiseKey.Pub[:])
-	cli.Log.Debugf("E2EE handshake: identity pub hex: %x", cli.Store.IdentityKey.Pub[:])
+	if ephemeralKP.Pub != nil {
+		cli.Log.Debugf("E2EE handshake: ephemeral pub hex: %x", ephemeralKP.Pub[:8])
+	}
+	if cli.Store.NoiseKey != nil && cli.Store.NoiseKey.Pub != nil {
+		cli.Log.Debugf("E2EE handshake: noise pub hex: %x", cli.Store.NoiseKey.Pub[:8])
+	}
+	if cli.Store.IdentityKey != nil && cli.Store.IdentityKey.Pub != nil {
+		cli.Log.Debugf("E2EE handshake: identity pub hex: %x", cli.Store.IdentityKey.Pub[:8])
+	}
 
 	nh := socket.NewNoiseHandshake()
 	nh.Start(socket.NoiseStartPattern, fs.Header)

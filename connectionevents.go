@@ -27,25 +27,26 @@ func (cli *Client) handleStreamError(ctx context.Context, node *waBinary.Node) {
 	cli.Log.Warnf("Stream error received: code=%s, conflictType=%s, deviceID=%v, fullNode=%s",
 		code, conflictType, cli.Store.ID, node.XMLString())
 
-	// Dump full device state for 500 errors (common during pairing issues)
+	// Dump device state for 500 errors (common during pairing issues)
+	// Only log key prefixes (first 8 bytes) for security
 	if code == "500" {
-		cli.Log.Errorf("E2EE STREAM ERROR 500 - Full device state dump:")
+		cli.Log.Errorf("E2EE STREAM ERROR 500 - Device state dump:")
 		cli.Log.Errorf("  Device ID: %v", cli.Store.ID)
 		cli.Log.Errorf("  LID: %v", cli.Store.LID)
 		cli.Log.Errorf("  Registration ID: %d", cli.Store.RegistrationID)
 		if cli.Store.IdentityKey != nil && cli.Store.IdentityKey.Pub != nil {
-			cli.Log.Errorf("  Identity key pub hex: %x", cli.Store.IdentityKey.Pub[:])
-			cli.Log.Errorf("  Identity key priv set: %v", cli.Store.IdentityKey.Priv != nil)
+			cli.Log.Errorf("  Identity key prefix: %x, priv set: %v", cli.Store.IdentityKey.Pub[:8], cli.Store.IdentityKey.Priv != nil)
 		} else {
 			cli.Log.Errorf("  Identity key: NOT SET or nil")
 		}
 		if cli.Store.NoiseKey != nil && cli.Store.NoiseKey.Pub != nil {
-			cli.Log.Errorf("  Noise key pub hex: %x", cli.Store.NoiseKey.Pub[:])
-			cli.Log.Errorf("  Noise key priv set: %v", cli.Store.NoiseKey.Priv != nil)
+			cli.Log.Errorf("  Noise key prefix: %x, priv set: %v", cli.Store.NoiseKey.Pub[:8], cli.Store.NoiseKey.Priv != nil)
 		} else {
 			cli.Log.Errorf("  Noise key: NOT SET or nil")
 		}
-		cli.Log.Errorf("  AdvSecretKey hex: %x", cli.Store.AdvSecretKey)
+		if len(cli.Store.AdvSecretKey) >= 8 {
+			cli.Log.Errorf("  AdvSecretKey prefix: %x", cli.Store.AdvSecretKey[:8])
+		}
 		cli.Log.Errorf("  RelaySignCallback set: %v", cli.RelaySignCallback != nil)
 		cli.Log.Errorf("  Platform: %s", cli.Store.Platform)
 		cli.Log.Errorf("  BusinessName: %s", cli.Store.BusinessName)
