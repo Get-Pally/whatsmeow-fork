@@ -8,6 +8,7 @@ package whatsmeow
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
@@ -61,12 +62,35 @@ func (cli *Client) handleStreamError(ctx context.Context, node *waBinary.Node) {
 			cli.dispatchEvent(&events.ManualLoginReconnect{})
 			return
 		}
-		cli.Log.Infof("Got 515 code, reconnecting...")
+		// Log device key state before reconnect for diagnosing E2EE issues
+		var spkID uint32
+		var spkPubHex, identityPubHex string
+		var preKeysNil bool
+		if cli.Store.SignedPreKey != nil {
+			spkID = cli.Store.SignedPreKey.KeyID
+			if cli.Store.SignedPreKey.Pub != nil {
+				spkPubHex = fmt.Sprintf("%x", cli.Store.SignedPreKey.Pub[:8])
+			}
+		}
+		if cli.Store.IdentityKey != nil && cli.Store.IdentityKey.Pub != nil {
+			identityPubHex = fmt.Sprintf("%x", cli.Store.IdentityKey.Pub[:8])
+		}
+		preKeysNil = cli.Store.PreKeys == nil
+		cli.Log.Infof("Got 515 code, reconnecting... (SPK ID=%d, SPK pub=%s, identity pub=%s, prekeys_nil=%v, reg_id=%d)",
+			spkID, spkPubHex, identityPubHex, preKeysNil, cli.Store.RegistrationID)
 		go func() {
 			cli.Disconnect()
 			err := cli.connect(ctx)
 			if err != nil {
 				cli.Log.Errorf("Failed to reconnect after 515 code: %v", err)
+			} else {
+				// Log key state after successful reconnect
+				var postSpkID uint32
+				if cli.Store.SignedPreKey != nil {
+					postSpkID = cli.Store.SignedPreKey.KeyID
+				}
+				cli.Log.Infof("Reconnected after 515 (SPK ID=%d, device_id=%v, logged_in=%v)",
+					postSpkID, cli.Store.ID, cli.IsLoggedIn())
 			}
 		}()
 	case code == "401" && conflictType == "device_removed":
@@ -211,7 +235,11 @@ func (cli *Client) handleConnectSuccess(ctx context.Context, node *waBinary.Node
 	// so do this unconditionally for a few months to ensure everyone gets the row.
 	cli.StoreLIDPNMapping(ctx, cli.Store.GetLID(), cli.Store.GetJID())
 	go func() {
-		if dbCount, err := cli.Store.PreKeys.UploadedPreKeyCount(ctx); err != nil {
+		// In relay mode, PreKeys store may be nil because iOS owns the pre-keys.
+		// Skip pre-key count check and upload - iOS handles pre-key generation and management.
+		if cli.Store.PreKeys == nil {
+			cli.Log.Infof("Pre-key check skipped: PreKeys store is nil (relay mode - iOS owns pre-keys)")
+		} else if dbCount, err := cli.Store.PreKeys.UploadedPreKeyCount(ctx); err != nil {
 			cli.Log.Errorf("Failed to get number of prekeys in database: %v", err)
 		} else if serverCount, err := cli.getServerPreKeyCount(ctx); err != nil {
 			cli.Log.Warnf("Failed to get number of prekeys on server: %v", err)

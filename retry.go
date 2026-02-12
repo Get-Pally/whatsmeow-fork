@@ -142,6 +142,13 @@ func (cli *Client) handleRetryReceipt(ctx context.Context, receipt *events.Recei
 	if err != nil {
 		return err
 	} else if msg == nil {
+		// In relay mode, the plaintext is owned by the external client (e.g., iOS).
+		// Forward the retry receipt so the external client can re-encrypt and re-send.
+		if cli.RelayRetryReceiptCallback != nil {
+			cli.Log.Infof("Relay mode: forwarding retry receipt for %s/%s to external client (retry #%d)", receipt.Chat, messageID, retryCount)
+			cli.RelayRetryReceiptCallback(ctx, receipt, retryCount, node)
+			return nil
+		}
 		return fmt.Errorf("couldn't find message %s", messageID)
 	}
 	var fbConsumerMsg *waConsumerApplication.ConsumerApplication
@@ -437,7 +444,25 @@ func (cli *Client) sendRetryReceipt(ctx context.Context, node *waBinary.Node, in
 		},
 	}
 	if retryCount > 1 || forceIncludeIdentity {
-		if key, err := cli.Store.PreKeys.GenOnePreKey(ctx); err != nil {
+		if cli.Store.PreKeys == nil {
+			// Relay mode: PreKeys store is nil because iOS owns one-time pre-keys.
+			// Send keys block without one-time pre-key (X3DH still works, just less forward secrecy).
+			if deviceIdentity, err := proto.Marshal(cli.Store.Account); err != nil {
+				cli.Log.Errorf("Failed to marshal account info for relay retry receipt: %v", err)
+			} else {
+				cli.Log.Infof("Sending retry receipt with keys (relay mode, no one-time prekey) for %s", id)
+				keysContent := []waBinary.Node{
+					{Tag: "type", Content: []byte{ecc.DjbType}},
+					{Tag: "identity", Content: cli.Store.IdentityKey.Pub[:]},
+					preKeyToNode(cli.Store.SignedPreKey),
+					{Tag: "device-identity", Content: deviceIdentity},
+				}
+				payload.Content = append(payload.GetChildren(), waBinary.Node{
+					Tag:     "keys",
+					Content: keysContent,
+				})
+			}
+		} else if key, err := cli.Store.PreKeys.GenOnePreKey(ctx); err != nil {
 			cli.Log.Errorf("Failed to get prekey for retry receipt: %v", err)
 		} else if deviceIdentity, err := proto.Marshal(cli.Store.Account); err != nil {
 			cli.Log.Errorf("Failed to marshal account info: %v", err)

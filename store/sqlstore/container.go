@@ -342,7 +342,10 @@ func (c *Container) initializeDevice(device *store.Device) {
 	innerStore := NewSQLStore(c, *device.ID)
 	device.Identities = innerStore
 	device.Sessions = innerStore
-	device.PreKeys = innerStore
+	// Only set PreKeys if not already set (allows relay mode to use external PreKeyStore)
+	if device.PreKeys == nil {
+		device.PreKeys = innerStore
+	}
 	device.SenderKeys = innerStore
 	device.AppStateKeys = innerStore
 	device.AppState = innerStore

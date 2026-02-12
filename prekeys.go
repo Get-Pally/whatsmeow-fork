@@ -50,6 +50,14 @@ func (cli *Client) getServerPreKeyCount(ctx context.Context) (int, error) {
 func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 	cli.uploadPreKeysLock.Lock()
 	defer cli.uploadPreKeysLock.Unlock()
+
+	// In relay mode, PreKeys store may be nil because iOS owns the pre-keys.
+	// The signed pre-key is already sent in the registration payload, so we can skip this.
+	if cli.Store.PreKeys == nil {
+		cli.Log.Infof("Skipping pre-key upload: PreKeys store is nil (relay mode - iOS owns pre-keys)")
+		return
+	}
+
 	if cli.lastPreKeyUpload.Add(10 * time.Minute).After(time.Now()) {
 		sc, _ := cli.getServerPreKeyCount(ctx)
 		if sc >= WantedPreKeyCount {
@@ -66,6 +74,12 @@ func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 	preKeys, err := cli.Store.PreKeys.GetOrGenPreKeys(ctx, uint32(wantedCount))
 	if err != nil {
 		cli.Log.Errorf("Failed to get prekeys to upload: %v", err)
+		return
+	}
+	// In relay mode, the store may return empty if iOS hasn't sent pre-keys yet.
+	// This is expected - iOS will upload pre-keys after linking completes.
+	if len(preKeys) == 0 {
+		cli.Log.Infof("No prekeys to upload (relay mode: waiting for iOS to send pre-keys)")
 		return
 	}
 	// Log signed pre-key details for debugging E2EE relay mode

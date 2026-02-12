@@ -173,6 +173,13 @@ type Client struct {
 	// processed internally by whatsmeow. This enables true E2EE where external clients own all keys.
 	RelaySkdmCallback func(ctx context.Context, groupJid types.JID, senderJid types.JID, skdmBytes []byte)
 
+	// RelayRetryReceiptCallback is called in relay mode when a recipient sends a retry receipt
+	// for a message we sent, but we can't fulfill it because the plaintext is owned by the
+	// external client (e.g., iOS). The callback receives the receipt info and the original
+	// retry receipt node (which contains the recipient's new pre-key bundle if available).
+	// The relay system should forward this to the external client for re-encryption.
+	RelayRetryReceiptCallback func(ctx context.Context, receipt *events.Receipt, retryCount int, node *waBinary.Node)
+
 	// GetClientPayload is called to get the client payload for connecting to the server.
 	// This should NOT be used for WhatsApp (to change the OS name, update fields in store.BaseClientPayload directly).
 	GetClientPayload func() *waWa6.ClientPayload
