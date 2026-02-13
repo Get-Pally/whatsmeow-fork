@@ -51,13 +51,6 @@ func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 	cli.uploadPreKeysLock.Lock()
 	defer cli.uploadPreKeysLock.Unlock()
 
-	// In relay mode, PreKeys store may be nil because iOS owns the pre-keys.
-	// The signed pre-key is already sent in the registration payload, so we can skip this.
-	if cli.Store.PreKeys == nil {
-		cli.Log.Infof("Skipping pre-key upload: PreKeys store is nil (relay mode - iOS owns pre-keys)")
-		return
-	}
-
 	if cli.lastPreKeyUpload.Add(10 * time.Minute).After(time.Now()) {
 		sc, _ := cli.getServerPreKeyCount(ctx)
 		if sc >= WantedPreKeyCount {
@@ -67,20 +60,20 @@ func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 	}
 	var registrationIDBytes [4]byte
 	binary.BigEndian.PutUint32(registrationIDBytes[:], cli.Store.RegistrationID)
-	wantedCount := WantedPreKeyCount
-	if initialUpload {
-		wantedCount = 812
-	}
-	preKeys, err := cli.Store.PreKeys.GetOrGenPreKeys(ctx, uint32(wantedCount))
-	if err != nil {
-		cli.Log.Errorf("Failed to get prekeys to upload: %v", err)
-		return
-	}
-	// In relay mode, the store may return empty if iOS hasn't sent pre-keys yet.
-	// This is expected - iOS will upload pre-keys after linking completes.
-	if len(preKeys) == 0 {
-		cli.Log.Infof("No prekeys to upload (relay mode: waiting for iOS to send pre-keys)")
-		return
+
+	// Collect one-time pre-keys (may be empty in relay mode if iOS hasn't sent them yet)
+	var preKeys []*keys.PreKey
+	if cli.Store.PreKeys != nil {
+		wantedCount := WantedPreKeyCount
+		if initialUpload {
+			wantedCount = 812
+		}
+		var err error
+		preKeys, err = cli.Store.PreKeys.GetOrGenPreKeys(ctx, uint32(wantedCount))
+		if err != nil {
+			cli.Log.Errorf("Failed to get prekeys to upload: %v", err)
+			return
+		}
 	}
 	// Log signed pre-key details for debugging E2EE relay mode
 	var signedPreKeyID uint32
@@ -93,13 +86,26 @@ func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 			signedPreKeyPubHex = "nil"
 		}
 	}
-	cli.Log.Infof("Uploading %d new prekeys to server (signed prekey ID: %d, pub: %s)", len(preKeys), signedPreKeyID, signedPreKeyPubHex)
+
+	// Even if no one-time pre-keys are available, we MUST still upload the signed pre-key (SPK).
+	// In relay mode, iOS owns the pre-keys and may not have sent them yet, but the SPK must
+	// reach WhatsApp's key distribution servers so that senders encrypt with the correct SPK.
+	if len(preKeys) == 0 {
+		if cli.Store.SignedPreKey == nil {
+			cli.Log.Infof("No prekeys or signed prekey to upload")
+			return
+		}
+		cli.Log.Infof("No one-time prekeys available, but uploading signed prekey (ID: %d, pub: %s) to WhatsApp servers", signedPreKeyID, signedPreKeyPubHex)
+	} else {
+		cli.Log.Infof("Uploading %d new prekeys to server (signed prekey ID: %d, pub: %s)", len(preKeys), signedPreKeyID, signedPreKeyPubHex)
+	}
+
 	// Validate identity key is set (in relay mode, external client must set public keys)
 	if cli.Store.IdentityKey == nil || cli.Store.IdentityKey.Pub == nil {
 		cli.Log.Errorf("Cannot upload prekeys: IdentityKey.Pub is nil - in relay mode, external client must set public keys before use")
 		return
 	}
-	_, err = cli.sendIQ(ctx, infoQuery{
+	_, err := cli.sendIQ(ctx, infoQuery{
 		Namespace: "encrypt",
 		Type:      "set",
 		To:        types.ServerJID,
@@ -116,10 +122,12 @@ func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 		return
 	}
 	cli.Log.Debugf("Got response to uploading prekeys")
-	err = cli.Store.PreKeys.MarkPreKeysAsUploaded(ctx, preKeys[len(preKeys)-1].KeyID)
-	if err != nil {
-		cli.Log.Warnf("Failed to mark prekeys as uploaded: %v", err)
-		return
+	if len(preKeys) > 0 {
+		markErr := cli.Store.PreKeys.MarkPreKeysAsUploaded(ctx, preKeys[len(preKeys)-1].KeyID)
+		if markErr != nil {
+			cli.Log.Warnf("Failed to mark prekeys as uploaded: %v", markErr)
+			return
+		}
 	}
 	cli.lastPreKeyUpload = time.Now()
 	return
