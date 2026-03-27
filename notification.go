@@ -23,6 +23,10 @@ import (
 )
 
 func (cli *Client) handleEncryptNotification(ctx context.Context, node *waBinary.Node) {
+	if cli.IsRelayTransportMode() {
+		cli.Log.Debugf("Skipping local encrypt notification handling in relay transport mode")
+		return
+	}
 	from := node.AttrGetter().JID("from")
 	if from == types.ServerJID {
 		count := node.GetChildByTag("count")
@@ -54,6 +58,10 @@ func (cli *Client) handleEncryptNotification(ctx context.Context, node *waBinary
 }
 
 func (cli *Client) handleAppStateNotification(ctx context.Context, node *waBinary.Node) {
+	if cli.IsRelayTransportMode() {
+		cli.Log.Debugf("Skipping app state notification handling in relay transport mode")
+		return
+	}
 	for _, collection := range node.GetChildrenByTag("collection") {
 		ag := collection.AttrGetter()
 		name := appstate.WAPatchName(ag.String("name"))
@@ -252,6 +260,10 @@ func (cli *Client) handleAccountSyncNotification(ctx context.Context, node *waBi
 }
 
 func (cli *Client) handlePrivacyTokenNotification(ctx context.Context, node *waBinary.Node) {
+	if cli.IsRelayTransportMode() {
+		cli.Log.Debugf("Skipping privacy token storage in relay transport mode")
+		return
+	}
 	ownJID := cli.getOwnID().ToNonAD()
 	ownLID := cli.getOwnLID().ToNonAD()
 	if ownJID.IsEmpty() {
@@ -412,6 +424,19 @@ func (cli *Client) handleStatusNotification(ctx context.Context, node *waBinary.
 }
 
 func (cli *Client) handleNotification(ctx context.Context, node *waBinary.Node) {
+	if cli.RelayNotificationCallback != nil {
+		handled, err := cli.RelayNotificationCallback(ctx, node)
+		if err != nil {
+			cli.Log.Warnf("Relay notification callback failed: %v", err)
+			return
+		} else if handled {
+			cli.backgroundIfAsyncAck(func() {
+				cli.sendAck(ctx, node, 0)
+			})
+			return
+		}
+	}
+
 	ag := node.AttrGetter()
 	notifType := ag.String("type")
 	if !ag.OK() {

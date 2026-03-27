@@ -186,6 +186,9 @@ func (cli *Client) SendMessage(ctx context.Context, to types.JID, message *waE2E
 	if cli == nil {
 		err = ErrClientIsNil
 		return
+	} else if cli.IsRelayTransportMode() {
+		err = ErrRelayTransportRequiresPreEncryptedSend
+		return
 	}
 	var req SendRequestExtra
 	if len(extra) > 1 {
@@ -1224,10 +1227,21 @@ func marshalMessage(to types.JID, message *waE2E.Message) (plaintext, dsmPlainte
 	return
 }
 
-func (cli *Client) makeDeviceIdentityNode() waBinary.Node {
+func (cli *Client) marshalStoredDeviceIdentity() ([]byte, error) {
+	if cli == nil || cli.Store == nil || cli.Store.Account == nil {
+		return nil, ErrNoDeviceIdentity
+	}
 	deviceIdentity, err := proto.Marshal(cli.Store.Account)
 	if err != nil {
-		panic(fmt.Errorf("failed to marshal device identity: %w", err))
+		return nil, fmt.Errorf("failed to marshal device identity: %w", err)
+	}
+	return deviceIdentity, nil
+}
+
+func (cli *Client) makeDeviceIdentityNode() waBinary.Node {
+	deviceIdentity, err := cli.marshalStoredDeviceIdentity()
+	if err != nil {
+		panic(err)
 	}
 	return waBinary.Node{
 		Tag:     "device-identity",

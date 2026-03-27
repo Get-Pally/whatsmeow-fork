@@ -29,6 +29,9 @@ import (
 // FetchAppState fetches updates to the given type of app state. If fullSync is true, the current
 // cached state will be removed and all app state patches will be re-fetched from the server.
 func (cli *Client) FetchAppState(ctx context.Context, name appstate.WAPatchName, fullSync, onlyIfNotSynced bool) error {
+	if cli.IsRelayTransportMode() {
+		return ErrRelayTransportOwnsAppState
+	}
 	eventsToDispatch, err := cli.fetchAppState(ctx, name, fullSync, onlyIfNotSynced)
 	if err != nil {
 		return err
@@ -101,6 +104,10 @@ func (cli *Client) handleAppStateRecovery(
 	reqID types.MessageID,
 	result []*waE2E.PeerDataOperationRequestResponseMessage_PeerDataOperationResult,
 ) bool {
+	if cli.IsRelayTransportMode() {
+		cli.Log.Debugf("Skipping app state recovery %s in relay transport mode", reqID)
+		return true
+	}
 	if len(result) == 0 || result[0].GetSyncdSnapshotFatalRecoveryResponse() == nil {
 		cli.Log.Warnf("No app state recovery data received for %s", reqID)
 		return true

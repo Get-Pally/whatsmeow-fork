@@ -208,6 +208,9 @@ type Device struct {
 	SignedPreKey   *keys.PreKey
 	RegistrationID uint32
 	AdvSecretKey   []byte
+	// TransportOnly marks sessions where the server only transports WhatsApp stanzas
+	// and never owns the companion identity or signed-prekey private material.
+	TransportOnly bool
 
 	ID  *types.JID
 	LID types.JID

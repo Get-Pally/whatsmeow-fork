@@ -15,26 +15,33 @@ import (
 	"go.mau.fi/whatsmeow/types"
 )
 
-// RelayEncryptionType represents the type of Signal Protocol encryption used
+// RelayEncryptionType represents the type of Signal Protocol encryption used.
 type RelayEncryptionType string
 
 const (
-	// RelayEncryptionPreKey is for pre-key messages (first message in a session)
+	// RelayEncryptionPreKey is for pre-key messages (first message in a session).
 	RelayEncryptionPreKey RelayEncryptionType = "pkmsg"
-	// RelayEncryptionNormal is for normal Signal messages (established session)
+	// RelayEncryptionNormal is for normal Signal messages (established session).
 	RelayEncryptionNormal RelayEncryptionType = "msg"
-	// RelayEncryptionSenderKey is for group messages using sender keys
+	// RelayEncryptionSenderKey is for group messages using sender keys.
 	RelayEncryptionSenderKey RelayEncryptionType = "skmsg"
 )
 
-// RelayMessageOptions configures a pre-encrypted relay message
+// RelayParticipantMessage is one per-device encrypted payload in a relay send.
+type RelayParticipantMessage struct {
+	JID            types.JID
+	EncryptionType RelayEncryptionType
+	Payload        []byte
+	MediaType      string
+}
+
+// RelayMessageOptions configures a pre-encrypted relay message.
 type RelayMessageOptions struct {
-	// EncryptionType specifies the Signal Protocol message type
-	// Must be one of: "pkmsg" (pre-key), "msg" (normal), or "skmsg" (sender key)
+	// EncryptionType specifies the Signal Protocol message type for legacy single-device sends.
 	EncryptionType RelayEncryptionType
 
-	// MessageType is the WhatsApp message type attribute (e.g., "text", "media")
-	// Defaults to "text" if empty
+	// MessageType is the WhatsApp message type attribute (e.g. "text", "media").
+	// Defaults to "text" if empty.
 	MessageType string
 
 	// Timestamp is when the message was created. Defaults to now if zero.
@@ -43,166 +50,106 @@ type RelayMessageOptions struct {
 	// MessageID is the message identifier. Generated if empty.
 	MessageID types.MessageID
 
-	// MediaType is optional media type for media messages (e.g., "image", "video")
+	// MediaType is optional media type for media messages (e.g. "image", "video").
 	MediaType string
 
-	// IncludeDeviceIdentity includes device identity node for pre-key messages
-	// This is typically needed for the first message in a session
+	// IncludeDeviceIdentity includes device identity node for pre-key messages.
 	IncludeDeviceIdentity bool
+
+	// AdditionalNodes are appended to the message node content after participants/device identity.
+	AdditionalNodes []waBinary.Node
 }
 
-// RelayMessageResponse contains the result of sending a relay message
+// RelayRetryMessageOptions configures a retry replay message.
+type RelayRetryMessageOptions struct {
+	EncryptionType        RelayEncryptionType
+	MessageType           string
+	MessageID             types.MessageID
+	Timestamp             time.Time
+	RetryCount            int
+	MediaType             string
+	IncludeDeviceIdentity bool
+	IsGroup               bool
+	Participant           types.JID
+	Recipient             types.JID
+	Edit                  string
+}
+
+// RelayMessageResponse contains the result of sending a relay message.
 type RelayMessageResponse struct {
-	// ID is the message ID that was sent
+	// ID is the message ID that was sent.
 	ID types.MessageID
 
-	// Timestamp is when the message was sent
+	// Timestamp is when the server acknowledged the message.
 	Timestamp time.Time
 
-	// ServerData is the raw response data from the server
+	// ServerID is the server-assigned message id if the server returned one.
+	ServerID types.MessageServerID
+
+	// ParticipantHash is the participant hash echoed by the server, if any.
+	ParticipantHash string
+
+	// ServerData is the raw ack node from the server.
 	ServerData []byte
 }
 
-// SendRelayMessage sends a message that was encrypted by an external entity.
+// RelayParticipantHash calculates the WhatsApp participant hash used in relay sends.
+func RelayParticipantHash(participants []types.JID) string {
+	return participantListHashV2(participants)
+}
+
+// SendRelayMessage sends a message that was encrypted by an external entity for a single device.
 //
-// This is intended for relay mode where the server acts as a relay and does not
-// own the Signal Protocol keys. The iOS client encrypts messages locally and
-// sends the pre-encrypted ciphertext to the server, which then forwards it to
-// WhatsApp without re-encrypting.
-//
-// The preEncryptedPayload must be a valid Signal Protocol ciphertext that was
-// encrypted for the recipient's device using proper Signal sessions.
-//
-// Example usage:
-//
-//	opts := whatsmeow.RelayMessageOptions{
-//	    EncryptionType: whatsmeow.RelayEncryptionNormal,
-//	    MessageType:    "text",
-//	}
-//	resp, err := client.SendRelayMessage(ctx, recipientJID, encryptedBytes, opts)
+// This is a compatibility wrapper around SendRelayMultiDeviceMessage.
 func (cli *Client) SendRelayMessage(
 	ctx context.Context,
 	to types.JID,
 	preEncryptedPayload []byte,
 	opts RelayMessageOptions,
 ) (*RelayMessageResponse, error) {
-	// Validate encryption type
-	switch opts.EncryptionType {
-	case RelayEncryptionPreKey, RelayEncryptionNormal, RelayEncryptionSenderKey:
-		// Valid
-	case "":
-		return nil, fmt.Errorf("encryption type is required")
-	default:
-		return nil, fmt.Errorf("invalid encryption type: %s (must be pkmsg, msg, or skmsg)", opts.EncryptionType)
+	err := validateRelayEncryptionType(opts.EncryptionType)
+	if err != nil {
+		return nil, err
+	}
+	return cli.SendRelayMultiDeviceMessage(ctx, to, []RelayParticipantMessage{{
+		JID:            to,
+		EncryptionType: opts.EncryptionType,
+		Payload:        preEncryptedPayload,
+		MediaType:      opts.MediaType,
+	}}, opts)
+}
+
+// SendRelayMultiDeviceMessage sends a pre-encrypted message with an explicit participant fanout.
+func (cli *Client) SendRelayMultiDeviceMessage(
+	ctx context.Context,
+	to types.JID,
+	participants []RelayParticipantMessage,
+	opts RelayMessageOptions,
+) (*RelayMessageResponse, error) {
+	if to.IsEmpty() {
+		return nil, fmt.Errorf("recipient JID is required")
+	}
+	if len(participants) == 0 {
+		return nil, fmt.Errorf("at least one relay participant is required")
 	}
 
-	// Validate payload
-	if len(preEncryptedPayload) == 0 {
-		return nil, fmt.Errorf("pre-encrypted payload cannot be empty")
+	msgID, ts, msgType := cli.normalizeRelayMessageOptions(&opts)
+	node, err := cli.buildRelayMessageNode(to, participants, opts, msgID, msgType)
+	if err != nil {
+		return nil, err
 	}
 
-	// Generate message ID if not provided
-	msgID := opts.MessageID
-	if msgID == "" {
-		msgID = cli.GenerateMessageID()
-	}
-
-	// Use provided timestamp or now
-	ts := opts.Timestamp
-	if ts.IsZero() {
-		ts = time.Now()
-	}
-
-	// Default message type
-	msgType := opts.MessageType
-	if msgType == "" {
-		msgType = "text"
-	}
-
-	// Build the message node
-	node := cli.buildRelayMessageNode(to, preEncryptedPayload, opts, msgID, msgType)
-
-	// Send via existing infrastructure
-	data, err := cli.sendNodeAndGetData(ctx, *node)
+	resp, err := cli.sendRelayNodeAndWait(ctx, msgID, ts, node)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send relay message: %w", err)
 	}
-
-	return &RelayMessageResponse{
-		ID:         msgID,
-		Timestamp:  ts,
-		ServerData: data,
-	}, nil
-}
-
-// buildRelayMessageNode constructs a message binary node with pre-encrypted content.
-// This bypasses the normal encryption pipeline and uses the provided ciphertext directly.
-func (cli *Client) buildRelayMessageNode(
-	to types.JID,
-	encryptedPayload []byte,
-	opts RelayMessageOptions,
-	msgID types.MessageID,
-	msgType string,
-) *waBinary.Node {
-	// Build the <enc> node with pre-encrypted content
-	encAttrs := waBinary.Attrs{
-		"v":    "2",
-		"type": string(opts.EncryptionType),
-	}
-
-	// Add media type if specified
-	if opts.MediaType != "" {
-		encAttrs["mediatype"] = opts.MediaType
-	}
-
-	encNode := waBinary.Node{
-		Tag:     "enc",
-		Attrs:   encAttrs,
-		Content: encryptedPayload,
-	}
-
-	// Build the <to> wrapper for the participant
-	toNode := waBinary.Node{
-		Tag: "to",
-		Attrs: waBinary.Attrs{
-			"jid": to.String(),
-		},
-		Content: []waBinary.Node{encNode},
-	}
-
-	// Build the <participants> wrapper
-	participantsNode := waBinary.Node{
-		Tag:     "participants",
-		Content: []waBinary.Node{toNode},
-	}
-
-	// Build the main message attributes
-	attrs := waBinary.Attrs{
-		"id":   msgID,
-		"type": msgType,
-		"to":   to,
-	}
-
-	// Build content array
-	content := []waBinary.Node{participantsNode}
-
-	// Include device identity for pre-key messages if requested
-	if opts.IncludeDeviceIdentity && opts.EncryptionType == RelayEncryptionPreKey {
-		content = append(content, cli.makeDeviceIdentityNode())
-	}
-
-	return &waBinary.Node{
-		Tag:     "message",
-		Attrs:   attrs,
-		Content: content,
-	}
+	return resp, nil
 }
 
 // SendRelayGroupMessage sends a pre-encrypted group message using sender keys.
 //
-// For group messages, the ciphertext should be encrypted using the sender's
-// sender key for the group. The phash (participant hash) is used for consistency
-// checks by WhatsApp.
+// This compatibility wrapper sends only the top-level sender-key ciphertext and no per-device
+// SKDM fanout. Use SendRelayMultiDeviceGroupMessage for a complete group send.
 func (cli *Client) SendRelayGroupMessage(
 	ctx context.Context,
 	groupJID types.JID,
@@ -210,82 +157,315 @@ func (cli *Client) SendRelayGroupMessage(
 	opts RelayMessageOptions,
 	phash string,
 ) (*RelayMessageResponse, error) {
-	// Force sender key encryption type for groups
-	if opts.EncryptionType != RelayEncryptionSenderKey {
-		opts.EncryptionType = RelayEncryptionSenderKey
+	return cli.SendRelayMultiDeviceGroupMessage(ctx, groupJID, nil, preEncryptedPayload, opts, phash)
+}
+
+// SendRelayMultiDeviceGroupMessage sends a group message with explicit per-device participant fanout.
+//
+// The participant messages are the sender-key distribution messages encrypted 1:1 for each
+// target device, and senderKeyPayload is the top-level skmsg payload for the group.
+func (cli *Client) SendRelayMultiDeviceGroupMessage(
+	ctx context.Context,
+	groupJID types.JID,
+	participants []RelayParticipantMessage,
+	senderKeyPayload []byte,
+	opts RelayMessageOptions,
+	phash string,
+) (*RelayMessageResponse, error) {
+	if groupJID.IsEmpty() {
+		return nil, fmt.Errorf("group JID is required")
+	}
+	if len(senderKeyPayload) == 0 {
+		return nil, fmt.Errorf("sender key payload cannot be empty")
+	}
+	opts.EncryptionType = RelayEncryptionSenderKey
+
+	msgID, ts, msgType := cli.normalizeRelayMessageOptions(&opts)
+	node, err := cli.buildRelayGroupMessageNode(groupJID, participants, senderKeyPayload, opts, msgID, msgType, phash)
+	if err != nil {
+		return nil, err
 	}
 
-	// Generate message ID if not provided
-	msgID := opts.MessageID
-	if msgID == "" {
-		msgID = cli.GenerateMessageID()
+	resp, err := cli.sendRelayNodeAndWait(ctx, msgID, ts, node)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send relay group message: %w", err)
+	}
+	return resp, nil
+}
+
+// SendRelayRetryMessage sends a client-built retry replay payload using the original retry envelope metadata.
+func (cli *Client) SendRelayRetryMessage(
+	ctx context.Context,
+	to types.JID,
+	preEncryptedPayload []byte,
+	opts RelayRetryMessageOptions,
+) (*RelayMessageResponse, error) {
+	if to.IsEmpty() {
+		return nil, fmt.Errorf("retry target JID is required")
+	}
+	if len(preEncryptedPayload) == 0 {
+		return nil, fmt.Errorf("retry payload cannot be empty")
+	}
+	if err := validateRelayEncryptionType(opts.EncryptionType); err != nil {
+		return nil, err
+	}
+	if opts.MessageID == "" {
+		return nil, fmt.Errorf("retry message id is required")
+	}
+	if opts.RetryCount <= 0 {
+		return nil, fmt.Errorf("retry count must be greater than zero")
 	}
 
-	// Use provided timestamp or now
-	ts := opts.Timestamp
-	if ts.IsZero() {
-		ts = time.Now()
-	}
-
-	// Default message type
 	msgType := opts.MessageType
 	if msgType == "" {
 		msgType = "text"
 	}
-
-	// Build the group message node (different structure than DM)
-	node := cli.buildRelayGroupMessageNode(groupJID, preEncryptedPayload, opts, msgID, msgType, phash)
-
-	// Send via existing infrastructure
-	data, err := cli.sendNodeAndGetData(ctx, *node)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send relay group message: %w", err)
+	ts := opts.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
 	}
+	node := cli.buildRelayRetryMessageNode(to, preEncryptedPayload, opts, msgType, ts)
+	resp, err := cli.sendRelayNodeAndWait(ctx, opts.MessageID, ts, node)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send relay retry message: %w", err)
+	}
+	return resp, nil
+}
 
-	return &RelayMessageResponse{
-		ID:         msgID,
-		Timestamp:  ts,
-		ServerData: data,
+func (cli *Client) normalizeRelayMessageOptions(opts *RelayMessageOptions) (types.MessageID, time.Time, string) {
+	msgID := opts.MessageID
+	if msgID == "" {
+		msgID = cli.GenerateMessageID()
+	}
+	ts := opts.Timestamp
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	msgType := opts.MessageType
+	if msgType == "" {
+		msgType = "text"
+	}
+	return msgID, ts, msgType
+}
+
+func validateRelayEncryptionType(encType RelayEncryptionType) error {
+	switch encType {
+	case RelayEncryptionPreKey, RelayEncryptionNormal, RelayEncryptionSenderKey:
+		return nil
+	case "":
+		return fmt.Errorf("encryption type is required")
+	default:
+		return fmt.Errorf("invalid encryption type: %s (must be pkmsg, msg, or skmsg)", encType)
+	}
+}
+
+func validateRelayParticipants(participants []RelayParticipantMessage) error {
+	for i, participant := range participants {
+		if participant.JID.IsEmpty() {
+			return fmt.Errorf("relay participant %d has empty JID", i)
+		}
+		if len(participant.Payload) == 0 {
+			return fmt.Errorf("relay participant %d has empty payload", i)
+		}
+		if err := validateRelayEncryptionType(participant.EncryptionType); err != nil {
+			return fmt.Errorf("relay participant %d: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// buildRelayMessageNode constructs a message binary node with pre-encrypted per-device content.
+func (cli *Client) buildRelayMessageNode(
+	to types.JID,
+	participants []RelayParticipantMessage,
+	opts RelayMessageOptions,
+	msgID types.MessageID,
+	msgType string,
+) (*waBinary.Node, error) {
+	if err := validateRelayParticipants(participants); err != nil {
+		return nil, err
+	}
+	participantNode, includeIdentity := cli.buildRelayParticipantsNode(participants)
+	content := []waBinary.Node{participantNode}
+	if opts.IncludeDeviceIdentity || includeIdentity {
+		content = append(content, cli.makeDeviceIdentityNode())
+	}
+	content = append(content, opts.AdditionalNodes...)
+
+	return &waBinary.Node{
+		Tag: "message",
+		Attrs: waBinary.Attrs{
+			"id":   msgID,
+			"type": msgType,
+			"to":   to,
+		},
+		Content: content,
 	}, nil
 }
 
-// buildRelayGroupMessageNode constructs a group message node with pre-encrypted sender key content.
+// buildRelayGroupMessageNode constructs a group message node with sender-key payload and optional per-device SKDM fanout.
 func (cli *Client) buildRelayGroupMessageNode(
 	groupJID types.JID,
-	encryptedPayload []byte,
+	participants []RelayParticipantMessage,
+	senderKeyPayload []byte,
 	opts RelayMessageOptions,
 	msgID types.MessageID,
 	msgType string,
 	phash string,
-) *waBinary.Node {
-	// Build the <enc> node with sender key encrypted content
-	encAttrs := waBinary.Attrs{
-		"v":    "2",
-		"type": "skmsg",
+) (*waBinary.Node, error) {
+	content := make([]waBinary.Node, 0, 2+len(opts.AdditionalNodes))
+	includeIdentity := false
+	if len(participants) > 0 {
+		if err := validateRelayParticipants(participants); err != nil {
+			return nil, err
+		}
+		participantNode, participantIdentity := cli.buildRelayParticipantsNode(participants)
+		content = append(content, participantNode)
+		includeIdentity = participantIdentity
 	}
-
-	// Add media type if specified
-	if opts.MediaType != "" {
-		encAttrs["mediatype"] = opts.MediaType
+	if opts.IncludeDeviceIdentity || includeIdentity {
+		content = append(content, cli.makeDeviceIdentityNode())
 	}
-
-	encNode := waBinary.Node{
+	content = append(content, waBinary.Node{
 		Tag:     "enc",
-		Attrs:   encAttrs,
-		Content: encryptedPayload,
-	}
+		Attrs:   relayEncAttrs(RelayEncryptionSenderKey, opts.MediaType),
+		Content: senderKeyPayload,
+	})
+	content = append(content, opts.AdditionalNodes...)
 
-	// Build the main message attributes
 	attrs := waBinary.Attrs{
-		"id":    msgID,
-		"type":  msgType,
-		"to":    groupJID,
-		"phash": phash,
+		"id":   msgID,
+		"type": msgType,
+		"to":   groupJID,
 	}
-
+	if phash != "" {
+		attrs["phash"] = phash
+	}
 	return &waBinary.Node{
 		Tag:     "message",
 		Attrs:   attrs,
-		Content: []waBinary.Node{encNode},
+		Content: content,
+	}, nil
+}
+
+func (cli *Client) buildRelayRetryMessageNode(
+	to types.JID,
+	preEncryptedPayload []byte,
+	opts RelayRetryMessageOptions,
+	msgType string,
+	ts time.Time,
+) *waBinary.Node {
+	content := []waBinary.Node{{
+		Tag:     "enc",
+		Attrs:   relayEncAttrs(opts.EncryptionType, opts.MediaType),
+		Content: preEncryptedPayload,
+	}}
+	if opts.IncludeDeviceIdentity || opts.EncryptionType == RelayEncryptionPreKey {
+		content = append(content, cli.makeDeviceIdentityNode())
 	}
+
+	attrs := waBinary.Attrs{
+		"to":   to,
+		"type": msgType,
+		"id":   opts.MessageID,
+		"t":    ts.Unix(),
+	}
+	if !opts.IsGroup {
+		attrs["device_fanout"] = false
+	}
+	if !opts.Participant.IsEmpty() {
+		attrs["participant"] = opts.Participant
+	}
+	if !opts.Recipient.IsEmpty() {
+		attrs["recipient"] = opts.Recipient
+	}
+	if opts.Edit != "" {
+		attrs["edit"] = opts.Edit
+	}
+
+	content[0].Attrs["count"] = opts.RetryCount
+	return &waBinary.Node{
+		Tag:     "message",
+		Attrs:   attrs,
+		Content: content,
+	}
+}
+
+func relayEncAttrs(encType RelayEncryptionType, mediaType string) waBinary.Attrs {
+	attrs := waBinary.Attrs{
+		"v":    "2",
+		"type": string(encType),
+	}
+	if mediaType != "" {
+		attrs["mediatype"] = mediaType
+	}
+	return attrs
+}
+
+func (cli *Client) buildRelayParticipantsNode(participants []RelayParticipantMessage) (waBinary.Node, bool) {
+	nodes := make([]waBinary.Node, 0, len(participants))
+	includeIdentity := false
+	for _, participant := range participants {
+		encNode := waBinary.Node{
+			Tag:     "enc",
+			Attrs:   relayEncAttrs(participant.EncryptionType, participant.MediaType),
+			Content: participant.Payload,
+		}
+		nodes = append(nodes, waBinary.Node{
+			Tag:     "to",
+			Attrs:   waBinary.Attrs{"jid": participant.JID},
+			Content: []waBinary.Node{encNode},
+		})
+		if participant.EncryptionType == RelayEncryptionPreKey {
+			includeIdentity = true
+		}
+	}
+	return waBinary.Node{
+		Tag:     "participants",
+		Content: nodes,
+	}, includeIdentity
+}
+
+func (cli *Client) sendRelayNodeAndWait(
+	ctx context.Context,
+	msgID types.MessageID,
+	fallbackTimestamp time.Time,
+	node *waBinary.Node,
+) (*RelayMessageResponse, error) {
+	respChan := cli.waitResponse(string(msgID))
+	data, err := cli.sendNodeAndGetData(ctx, *node)
+	if err != nil {
+		cli.cancelResponse(string(msgID), respChan)
+		return nil, err
+	}
+
+	var respNode *waBinary.Node
+	select {
+	case respNode = <-respChan:
+	case <-ctx.Done():
+		cli.cancelResponse(string(msgID), respChan)
+		return nil, ctx.Err()
+	}
+	if isDisconnectNode(respNode) {
+		respNode, err = cli.retryFrame(ctx, "relay message send", string(msgID), data, respNode, 0)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	ag := respNode.AttrGetter()
+	resp := &RelayMessageResponse{
+		ID:              msgID,
+		Timestamp:       ag.UnixTime("t"),
+		ServerID:        types.MessageServerID(ag.OptionalInt("server_id")),
+		ParticipantHash: ag.OptionalString("phash"),
+	}
+	if resp.Timestamp.IsZero() {
+		resp.Timestamp = fallbackTimestamp
+	}
+	resp.ServerData, _ = waBinary.Marshal(*respNode)
+	if errorCode := ag.Int("error"); errorCode != 0 {
+		return resp, fmt.Errorf("%w %d", ErrServerReturnedError, errorCode)
+	}
+	return resp, nil
 }

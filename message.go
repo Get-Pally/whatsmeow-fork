@@ -61,6 +61,17 @@ func (cli *Client) handleEncryptedMessage(ctx context.Context, node *waBinary.No
 			defer cli.maybeDeferredAck(ctx, node)(&cancelled)
 			cancelled = cli.handlePlaintextMessage(ctx, info, node)
 		} else {
+			if cli.IsRelayTransportMode() {
+				if cli.RelayMessageCallback == nil {
+					cli.Log.Errorf("Relay transport mode received encrypted message %s without a relay callback; refusing local decryption", info.ID)
+					return
+				} else if cli.RelayMessageCallback(ctx, info, node) {
+					cli.Log.Debugf("Message intercepted by relay callback, skipping decryption")
+					return
+				}
+				cli.Log.Errorf("Relay transport callback declined encrypted message %s; refusing local decryption fallback", info.ID)
+				return
+			}
 			cli.decryptMessages(ctx, info, node)
 		}
 	}
@@ -643,6 +654,16 @@ func padMessage(plaintext []byte) []byte {
 }
 
 func (cli *Client) handleSenderKeyDistributionMessage(ctx context.Context, chat, from types.JID, axolotlSKDM []byte) {
+	// In relay mode with external sender key management, forward SKDM to external client
+	// instead of processing internally. This enables true E2EE where the external client
+	// owns all keys and performs all decryption.
+	if cli.RelaySkdmCallback != nil {
+		cli.RelaySkdmCallback(ctx, chat, from, axolotlSKDM)
+		cli.Log.Debugf("Forwarded SKDM from %s for group %s to relay callback", from, chat)
+		return
+	}
+
+	// Normal mode: process SKDM internally.
 	builder := groups.NewGroupSessionBuilder(cli.Store, pbSerializer)
 	senderKeyName := protocol.NewSenderKeyName(chat.String(), from.SignalAddress())
 	sdkMsg, err := protocol.NewSenderKeyDistributionMessageFromBytes(axolotlSKDM, pbSerializer.SenderKeyDistributionMessage)
@@ -659,6 +680,9 @@ func (cli *Client) handleSenderKeyDistributionMessage(ctx context.Context, chat,
 }
 
 func (cli *Client) handleHistorySyncNotificationLoop() {
+	if cli.IsRelayTransportMode() {
+		return
+	}
 	defer func() {
 		cli.historySyncHandlerStarted.Store(false)
 		err := recover()
@@ -694,6 +718,9 @@ func (cli *Client) handleHistorySyncNotificationLoop() {
 // You only need to call this manually if you set [Client.ManualHistorySyncDownload] to true.
 // By default, whatsmeow will call this automatically and dispatch an [events.HistorySync] with the parsed data.
 func (cli *Client) DownloadHistorySync(ctx context.Context, notif *waE2E.HistorySyncNotification, synchronousStorage bool) (*waHistorySync.HistorySync, error) {
+	if cli.IsRelayTransportMode() {
+		return nil, ErrRelayTransportOwnsHistory
+	}
 	var data []byte
 	var err error
 	if notif.InitialHistBootstrapInlinePayload != nil {
@@ -732,6 +759,10 @@ func (cli *Client) DownloadHistorySync(ctx context.Context, notif *waE2E.History
 }
 
 func (cli *Client) handleAppStateSyncKeyShare(ctx context.Context, keys *waE2E.AppStateSyncKeyShare) {
+	if cli.IsRelayTransportMode() {
+		cli.Log.Debugf("Skipping app state key share in relay transport mode")
+		return
+	}
 	onlyResyncIfNotSynced := true
 
 	cli.Log.Debugf("Got %d new app state keys", len(keys.GetKeys()))
@@ -790,6 +821,9 @@ func (cli *Client) handlePlaceholderResendResponse(msg *waE2E.PeerDataOperationR
 
 func (cli *Client) handleProtocolMessage(ctx context.Context, info *types.MessageInfo, msg *waE2E.Message) (ok bool) {
 	ok = true
+	if cli.IsRelayTransportMode() {
+		return true
+	}
 	protoMsg := msg.GetProtocolMessage()
 
 	if !info.IsFromMe {
@@ -857,6 +891,9 @@ func (cli *Client) processProtocolParts(ctx context.Context, info *types.Message
 }
 
 func (cli *Client) storeMessageSecret(ctx context.Context, info *types.MessageInfo, msg *waE2E.Message) {
+	if cli.IsRelayTransportMode() {
+		return
+	}
 	if msgSecret := msg.GetMessageContextInfo().GetMessageSecret(); len(msgSecret) > 0 {
 		err := cli.Store.MsgSecrets.PutMessageSecret(ctx, info.Chat, info.Sender, info.ID, msgSecret)
 		if err != nil {
@@ -868,6 +905,9 @@ func (cli *Client) storeMessageSecret(ctx context.Context, info *types.MessageIn
 }
 
 func (cli *Client) storeHistoricalMessageSecrets(ctx context.Context, conversations []*waHistorySync.Conversation) {
+	if cli.IsRelayTransportMode() {
+		return
+	}
 	var secrets []store.MessageSecretInsert
 	var privacyTokens []store.PrivacyToken
 	ownID := cli.getOwnID().ToNonAD()

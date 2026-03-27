@@ -33,6 +33,28 @@ var (
 	AdvHostedDeviceSignaturePrefix  = []byte{6, 6}
 )
 
+// RelayPairSuccessRequest is the raw pair-success payload that must be validated by the
+// external companion owner in transport-only relay mode.
+type RelayPairSuccessRequest struct {
+	RequestID      string
+	DeviceIdentity []byte
+	BusinessName   string
+	Platform       string
+	JID            types.JID
+	LID            types.JID
+}
+
+// RelayPairSuccessResponse is the validated pair-success result returned by the external
+// companion owner in transport-only relay mode.
+type RelayPairSuccessResponse struct {
+	// Account is the full ADVSignedDeviceIdentity protobuf to persist for future device-identity nodes.
+	Account []byte
+	// DeviceIdentity is the self-signed ADVSignedDeviceIdentity protobuf to echo back in pair-device-sign.
+	DeviceIdentity []byte
+	// KeyIndex is copied into the pair-device-sign device-identity node attrs.
+	KeyIndex uint32
+}
+
 func (cli *Client) handleIQ(ctx context.Context, node *waBinary.Node) {
 	children := node.GetChildren()
 	if len(children) != 1 || node.Attrs["from"] != types.ServerJID {
@@ -113,6 +135,14 @@ func (cli *Client) handlePairSuccess(ctx context.Context, node *waBinary.Node) {
 }
 
 func (cli *Client) handlePair(ctx context.Context, deviceIdentityBytes []byte, reqID, businessName, platform string, jid, lid types.JID) error {
+	if cli.IsRelayTransportMode() {
+		if cli.RelayPairSuccessCallback == nil {
+			cli.sendPairError(ctx, reqID, 500, "internal-error")
+			return ErrRelayTransportRequiresPairSuccessCallback
+		}
+		return cli.handleRelayPair(ctx, deviceIdentityBytes, reqID, businessName, platform, jid, lid)
+	}
+
 	var deviceIdentityContainer waAdv.ADVSignedDeviceIdentityHMAC
 	err := proto.Unmarshal(deviceIdentityBytes, &deviceIdentityContainer)
 	if err != nil {
@@ -152,7 +182,17 @@ func (cli *Client) handlePair(ctx context.Context, deviceIdentityBytes []byte, r
 		return ErrPairInvalidDeviceSignature
 	}
 
-	deviceIdentity.DeviceSignature = generateDeviceSignature(&deviceIdentity, cli.Store.IdentityKey)[:]
+	if cli.RelaySignCallback != nil {
+		message := concatBytes(AdvDeviceSignaturePrefix, deviceIdentity.Details, cli.Store.IdentityKey.Pub[:], deviceIdentity.AccountSignatureKey)
+		signature, err := cli.RelaySignCallback(message)
+		if err != nil {
+			cli.sendPairError(ctx, reqID, 500, "internal-error")
+			return &PairProtoError{"failed to get relay signature from external signer", err}
+		}
+		deviceIdentity.DeviceSignature = signature[:]
+	} else {
+		deviceIdentity.DeviceSignature = generateDeviceSignature(&deviceIdentity, cli.Store.IdentityKey)[:]
+	}
 
 	if cli.PrePairCallback != nil && !cli.PrePairCallback(jid, platform, businessName) {
 		cli.sendPairError(ctx, reqID, 500, "internal-error")
@@ -207,6 +247,84 @@ func (cli *Client) handlePair(ctx context.Context, deviceIdentityBytes []byte, r
 					"key-index": deviceIdentityDetails.GetKeyIndex(),
 				},
 				Content: selfSignedDeviceIdentity,
+			}},
+		}},
+	})
+	if err != nil {
+		_ = cli.Store.Delete(ctx)
+		return fmt.Errorf("failed to send pairing confirmation: %w", err)
+	}
+	return nil
+}
+
+func (cli *Client) handleRelayPair(ctx context.Context, deviceIdentityBytes []byte, reqID, businessName, platform string, jid, lid types.JID) error {
+	if cli.PrePairCallback != nil && !cli.PrePairCallback(jid, platform, businessName) {
+		cli.sendPairError(ctx, reqID, 500, "internal-error")
+		return ErrPairRejectedLocally
+	}
+
+	resp, err := cli.RelayPairSuccessCallback(ctx, &RelayPairSuccessRequest{
+		RequestID:      reqID,
+		DeviceIdentity: append([]byte(nil), deviceIdentityBytes...),
+		BusinessName:   businessName,
+		Platform:       platform,
+		JID:            jid,
+		LID:            lid,
+	})
+	if err != nil {
+		cli.sendPairError(ctx, reqID, 500, "internal-error")
+		return &PairProtoError{"failed to validate pair success using relay callback", err}
+	}
+
+	var account waAdv.ADVSignedDeviceIdentity
+	if err = proto.Unmarshal(resp.Account, &account); err != nil {
+		cli.sendPairError(ctx, reqID, 500, "internal-error")
+		return &PairProtoError{"failed to parse relay account identity", err}
+	}
+	if len(account.GetAccountSignatureKey()) != 32 {
+		cli.sendPairError(ctx, reqID, 500, "internal-error")
+		return &PairProtoError{"relay account identity missing account signature key", ErrPairInvalidDeviceSignature}
+	}
+
+	mainDeviceLID := lid
+	mainDeviceLID.Device = 0
+	mainDeviceIdentity := *(*[32]byte)(account.AccountSignatureKey)
+
+	cli.Store.Account = &account
+	cli.Store.ID = &jid
+	cli.Store.LID = lid
+	cli.Store.BusinessName = businessName
+	cli.Store.Platform = platform
+	err = cli.Store.Save(ctx)
+	if err != nil {
+		cli.sendPairError(ctx, reqID, 500, "internal-error")
+		return &PairDatabaseError{"failed to save device store", err}
+	}
+	cli.StoreLIDPNMapping(ctx, lid, jid)
+	err = cli.Store.Identities.PutIdentity(ctx, mainDeviceLID.SignalAddress().String(), mainDeviceIdentity)
+	if err != nil {
+		_ = cli.Store.Delete(ctx)
+		cli.sendPairError(ctx, reqID, 500, "internal-error")
+		return &PairDatabaseError{"failed to store main device identity", err}
+	}
+
+	cli.expectDisconnect()
+
+	err = cli.sendNode(ctx, waBinary.Node{
+		Tag: "iq",
+		Attrs: waBinary.Attrs{
+			"to":   types.ServerJID,
+			"type": "result",
+			"id":   reqID,
+		},
+		Content: []waBinary.Node{{
+			Tag: "pair-device-sign",
+			Content: []waBinary.Node{{
+				Tag: "device-identity",
+				Attrs: waBinary.Attrs{
+					"key-index": resp.KeyIndex,
+				},
+				Content: resp.DeviceIdentity,
 			}},
 		}},
 	})

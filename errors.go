@@ -33,9 +33,20 @@ var (
 
 	ErrNoPushName = errors.New("can't send presence without PushName set")
 
-	ErrNoPrivacyToken = errors.New("no privacy token stored")
+	ErrNoPrivacyToken   = errors.New("no privacy token stored")
+	ErrNoDeviceIdentity = errors.New("no device identity stored")
+	ErrNoSignedPreKey   = errors.New("no signed pre-key stored")
 
-	ErrAppStateUpdate = errors.New("server returned error updating app state")
+	ErrRelayTransportRequiresPreEncryptedSend     = errors.New("relay transport mode requires pre-encrypted relay send APIs")
+	ErrRelayTransportRequiresTransportOnlyStore   = errors.New("relay transport mode requires a transport-only device store with no private Signal keys")
+	ErrRelayTransportRequiresPairSuccessCallback  = errors.New("relay transport mode requires a pair-success callback during linking")
+	ErrRelayTransportRequiresMessageCallback      = errors.New("relay transport mode requires an encrypted-message relay callback")
+	ErrRelayTransportRequiresNotificationCallback = errors.New("relay transport mode requires a transport-notification relay callback")
+	ErrRelayTransportRequiresRetryCallback        = errors.New("relay transport mode requires a retry-receipt relay callback")
+
+	ErrAppStateUpdate             = errors.New("server returned error updating app state")
+	ErrRelayTransportOwnsAppState = errors.New("relay transport mode delegates app state to the external client")
+	ErrRelayTransportOwnsHistory  = errors.New("relay transport mode delegates history sync to the external client")
 )
 
 // Errors that happen while confirming device pairing

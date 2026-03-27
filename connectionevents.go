@@ -179,7 +179,9 @@ func (cli *Client) handleConnectSuccess(ctx context.Context, node *waBinary.Node
 	// so do this unconditionally for a few months to ensure everyone gets the row.
 	cli.StoreLIDPNMapping(ctx, cli.Store.GetLID(), cli.Store.GetJID())
 	go func() {
-		if dbCount, err := cli.Store.PreKeys.UploadedPreKeyCount(ctx); err != nil {
+		if cli.Store.PreKeys == nil {
+			cli.Log.Infof("Pre-key check skipped: PreKeys store is nil (relay mode - external client owns pre-keys)")
+		} else if dbCount, err := cli.Store.PreKeys.UploadedPreKeyCount(ctx); err != nil {
 			cli.Log.Errorf("Failed to get number of prekeys in database: %v", err)
 		} else if serverCount, err := cli.getServerPreKeyCount(ctx); err != nil {
 			cli.Log.Warnf("Failed to get number of prekeys on server: %v", err)

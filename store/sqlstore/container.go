@@ -112,7 +112,7 @@ func (c *Container) Upgrade(ctx context.Context) error {
 }
 
 const getAllDevicesQuery = `
-SELECT jid, lid, registration_id, noise_key, identity_key,
+SELECT jid, lid, registration_id, transport_only, noise_key, identity_key,
        signed_pre_key, signed_pre_key_id, signed_pre_key_sig,
        adv_key, adv_details, adv_account_sig, adv_account_sig_key, adv_device_sig,
        platform, business_name, push_name, facebook_uuid, lid_migration_ts
@@ -125,24 +125,29 @@ func (c *Container) scanDevice(row dbutil.Scannable) (*store.Device, error) {
 	var device store.Device
 	device.Log = c.log
 	device.SignedPreKey = &keys.PreKey{}
-	var noisePriv, identityPriv, preKeyPriv, preKeySig []byte
+	var noisePriv, identityData, preKeyData, preKeySig []byte
 	var account waAdv.ADVSignedDeviceIdentity
 	var fbUUID uuid.NullUUID
 
 	err := row.Scan(
-		&device.ID, &device.LID, &device.RegistrationID, &noisePriv, &identityPriv,
-		&preKeyPriv, &device.SignedPreKey.KeyID, &preKeySig,
+		&device.ID, &device.LID, &device.RegistrationID, &device.TransportOnly, &noisePriv, &identityData,
+		&preKeyData, &device.SignedPreKey.KeyID, &preKeySig,
 		&device.AdvSecretKey, &account.Details, &account.AccountSignature, &account.AccountSignatureKey, &account.DeviceSignature,
 		&device.Platform, &device.BusinessName, &device.PushName, &fbUUID, &device.LIDMigrationTimestamp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan session: %w", err)
-	} else if len(noisePriv) != 32 || len(identityPriv) != 32 || len(preKeyPriv) != 32 || len(preKeySig) != 64 {
+	} else if len(noisePriv) != 32 || len(identityData) != 32 || len(preKeyData) != 32 || len(preKeySig) != 64 {
 		return nil, ErrInvalidLength
 	}
 
 	device.NoiseKey = keys.NewKeyPairFromPrivateKey(*(*[32]byte)(noisePriv))
-	device.IdentityKey = keys.NewKeyPairFromPrivateKey(*(*[32]byte)(identityPriv))
-	device.SignedPreKey.KeyPair = *keys.NewKeyPairFromPrivateKey(*(*[32]byte)(preKeyPriv))
+	if device.TransportOnly {
+		device.IdentityKey = &keys.KeyPair{Pub: (*[32]byte)(identityData)}
+		device.SignedPreKey.KeyPair = keys.KeyPair{Pub: (*[32]byte)(preKeyData)}
+	} else {
+		device.IdentityKey = keys.NewKeyPairFromPrivateKey(*(*[32]byte)(identityData))
+		device.SignedPreKey.KeyPair = *keys.NewKeyPairFromPrivateKey(*(*[32]byte)(preKeyData))
+	}
 	device.SignedPreKey.Signature = (*[64]byte)(preKeySig)
 	device.Account = &account
 	device.FacebookUUID = fbUUID.UUID
@@ -198,17 +203,18 @@ func (c *Container) GetDevice(ctx context.Context, jid types.JID) (*store.Device
 }
 
 const (
-	insertDeviceQuery = `
-		INSERT INTO whatsmeow_device (jid, lid, registration_id, noise_key, identity_key,
-									  signed_pre_key, signed_pre_key_id, signed_pre_key_sig,
-									  adv_key, adv_details, adv_account_sig, adv_account_sig_key, adv_device_sig,
-									  platform, business_name, push_name, facebook_uuid, lid_migration_ts)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-		ON CONFLICT (jid) DO UPDATE
-			SET lid=excluded.lid,
-				platform=excluded.platform,
-				business_name=excluded.business_name,
-				push_name=excluded.push_name,
+		insertDeviceQuery = `
+			INSERT INTO whatsmeow_device (jid, lid, registration_id, transport_only, noise_key, identity_key,
+										  signed_pre_key, signed_pre_key_id, signed_pre_key_sig,
+										  adv_key, adv_details, adv_account_sig, adv_account_sig_key, adv_device_sig,
+										  platform, business_name, push_name, facebook_uuid, lid_migration_ts)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+			ON CONFLICT (jid) DO UPDATE
+				SET lid=excluded.lid,
+					transport_only=excluded.transport_only,
+					platform=excluded.platform,
+					business_name=excluded.business_name,
+					push_name=excluded.push_name,
 				lid_migration_ts=excluded.lid_migration_ts
 	`
 	deleteDeviceQuery = `DELETE FROM whatsmeow_device WHERE jid=$1`
@@ -249,9 +255,15 @@ func (c *Container) PutDevice(ctx context.Context, device *store.Device) error {
 	if device.ID == nil {
 		return ErrDeviceIDMustBeSet
 	}
+	identityBytes := device.IdentityKey.Pub[:]
+	signedPreKeyBytes := device.SignedPreKey.Pub[:]
+	if !device.TransportOnly {
+		identityBytes = device.IdentityKey.Priv[:]
+		signedPreKeyBytes = device.SignedPreKey.Priv[:]
+	}
 	_, err := c.db.Exec(ctx, insertDeviceQuery,
-		device.ID, device.LID, device.RegistrationID, device.NoiseKey.Priv[:], device.IdentityKey.Priv[:],
-		device.SignedPreKey.Priv[:], device.SignedPreKey.KeyID, device.SignedPreKey.Signature[:],
+		device.ID, device.LID, device.RegistrationID, device.TransportOnly, device.NoiseKey.Priv[:], identityBytes,
+		signedPreKeyBytes, device.SignedPreKey.KeyID, device.SignedPreKey.Signature[:],
 		device.AdvSecretKey, device.Account.Details, device.Account.AccountSignature, device.Account.AccountSignatureKey, device.Account.DeviceSignature,
 		device.Platform, device.BusinessName, device.PushName, uuid.NullUUID{UUID: device.FacebookUUID, Valid: device.FacebookUUID != uuid.Nil},
 		device.LIDMigrationTimestamp,

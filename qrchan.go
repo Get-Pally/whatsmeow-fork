@@ -166,6 +166,8 @@ func (cli *Client) GetQRChannel(ctx context.Context) (<-chan QRChannelItem, erro
 		return nil, ErrQRAlreadyConnected
 	} else if cli.Store.ID != nil {
 		return nil, ErrQRStoreContainsID
+	} else if err := cli.validateRelayTransportConfiguration(); err != nil {
+		return nil, err
 	}
 	ch := make(chan QRChannelItem, 8)
 	qrc := qrChannel{

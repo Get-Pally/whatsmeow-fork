@@ -85,6 +85,7 @@ type Client struct {
 	DisableLoginAutoReconnect bool
 
 	sendActiveReceipts atomic.Uint32
+	relayTransportMode atomic.Bool
 
 	// EmitAppStateEventsOnFullSync can be set to true if you want to get app state events emitted
 	// even when re-syncing the whole state.
@@ -153,6 +154,41 @@ type Client struct {
 	// PrePairCallback is called before pairing is completed. If it returns false, the pairing will be cancelled and
 	// the client will disconnect.
 	PrePairCallback func(jid types.JID, platform, businessName string) bool
+
+	// RelaySignCallback is called during pairing in relay mode when an external entity owns the identity key.
+	// The callback receives the message to sign (prefix + details + public key + account signature key)
+	// and must return a 64-byte Ed25519 signature created with the external identity private key.
+	// If this callback is set, it will be used instead of the local identity key for device signature generation.
+	RelaySignCallback func(message []byte) ([64]byte, error)
+
+	// RelayMessageCallback is called in relay mode when an encrypted message is received.
+	// The callback receives the parsed message info and the raw binary node.
+	// If it returns true, the message was handled by the relay and normal decryption is skipped.
+	// If it returns false (or callback is nil), normal decryption proceeds.
+	// This allows relay mode to forward encrypted blobs to external clients without decryption.
+	RelayMessageCallback func(ctx context.Context, info *types.MessageInfo, node *waBinary.Node) bool
+
+	// RelaySkdmCallback is called when a sender key distribution message is received in relay mode.
+	// The callback receives the group JID, sender JID, and raw SKDM bytes for forwarding to external
+	// clients that manage their own sender keys. If set, the SKDM is forwarded instead of being
+	// processed internally by whatsmeow. This enables true E2EE where external clients own all keys.
+	RelaySkdmCallback func(ctx context.Context, groupJid types.JID, senderJid types.JID, skdmBytes []byte)
+
+	// RelayRetryReceiptCallback is called in relay mode when a recipient sends a retry receipt
+	// for a message we sent, but we can't fulfill it because the plaintext is owned by the
+	// external client (e.g., iOS). The callback receives the receipt info and the original
+	// retry receipt node (which contains the recipient's new pre-key bundle if available).
+	// The relay system should forward this to the external client for re-encryption.
+	RelayRetryReceiptCallback func(ctx context.Context, receipt *events.Receipt, retryCount int, node *waBinary.Node)
+
+	// RelayNotificationCallback is called in relay mode before a notification stanza is handled.
+	// If the callback returns handled=true, default notification processing is skipped and the
+	// stanza ack is sent only after this callback succeeds.
+	RelayNotificationCallback func(ctx context.Context, node *waBinary.Node) (handled bool, err error)
+	// RelayPairSuccessCallback is called in relay mode when the companion pairing flow reaches
+	// pair-success. The callback must fully validate the pair-success payload and return the
+	// device identity blobs that the transport layer should persist and echo back to WhatsApp.
+	RelayPairSuccessCallback func(ctx context.Context, request *RelayPairSuccessRequest) (*RelayPairSuccessResponse, error)
 
 	// GetClientPayload is called to get the client payload for connecting to the server.
 	// This should NOT be used for WhatsApp (to change the OS name, update fields in store.BaseClientPayload directly).
@@ -280,6 +316,53 @@ func NewClient(deviceStore *store.Device, log waLog.Logger) *Client {
 		// Apparently there's also an <error> node which can have a code=479 and means "Invalid stanza sent (smax-invalid)"
 	}
 	return cli
+}
+
+// SetRelayTransportMode marks the client as transport-only. In this mode the server must not
+// process app state, history sync, message secret, or privacy token data locally.
+func (cli *Client) SetRelayTransportMode(enabled bool) {
+	cli.relayTransportMode.Store(enabled)
+}
+
+// IsRelayTransportMode returns true when the client is operating as a transport-only relay.
+func (cli *Client) IsRelayTransportMode() bool {
+	if cli == nil {
+		return false
+	}
+	return cli.relayTransportMode.Load()
+}
+
+func (cli *Client) validateRelayTransportConfiguration() error {
+	if !cli.IsRelayTransportMode() {
+		return nil
+	} else if cli.Store == nil {
+		return ErrClientIsNil
+	} else if !cli.Store.TransportOnly {
+		return ErrRelayTransportRequiresTransportOnlyStore
+	} else if cli.Store.IdentityKey == nil || cli.Store.IdentityKey.Pub == nil {
+		return ErrNoDeviceIdentity
+	} else if cli.Store.IdentityKey.Priv != nil {
+		return ErrRelayTransportRequiresTransportOnlyStore
+	} else if cli.Store.SignedPreKey == nil || cli.Store.SignedPreKey.Pub == nil || cli.Store.SignedPreKey.Signature == nil {
+		return ErrNoSignedPreKey
+	} else if cli.Store.SignedPreKey.Priv != nil {
+		return ErrRelayTransportRequiresTransportOnlyStore
+	}
+
+	if cli.Store.ID == nil {
+		if cli.RelayPairSuccessCallback == nil {
+			return ErrRelayTransportRequiresPairSuccessCallback
+		}
+		return nil
+	}
+	if cli.RelayMessageCallback == nil {
+		return ErrRelayTransportRequiresMessageCallback
+	} else if cli.RelayNotificationCallback == nil {
+		return ErrRelayTransportRequiresNotificationCallback
+	} else if cli.RelayRetryReceiptCallback == nil {
+		return ErrRelayTransportRequiresRetryCallback
+	}
+	return nil
 }
 
 // SetProxyAddress is a helper method that parses a URL string and calls SetProxy or SetSOCKSProxy based on the URL scheme.
@@ -500,6 +583,9 @@ func (cli *Client) unlockedConnect(ctx context.Context) error {
 		} else {
 			return ErrAlreadyConnected
 		}
+	}
+	if err := cli.validateRelayTransportConfiguration(); err != nil {
+		return err
 	}
 
 	cli.resetExpectedDisconnect()
