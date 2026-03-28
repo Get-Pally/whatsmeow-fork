@@ -42,11 +42,11 @@ func (cli *Client) handleEncryptNotification(ctx context.Context, node *waBinary
 		}
 	} else if _, ok := node.GetOptionalChildByTag("identity"); ok {
 		cli.Log.Debugf("Got identity change for %s: %s, deleting all identities/sessions for that number", from, node.XMLString())
-		err := cli.Store.Identities.DeleteAllIdentities(ctx, from.User)
+		err := cli.Store.Companion.Identities.DeleteAllIdentities(ctx, from.User)
 		if err != nil {
 			cli.Log.Warnf("Failed to delete all identities of %s from store after identity change: %v", from, err)
 		}
-		err = cli.Store.Sessions.DeleteAllSessions(ctx, from.User)
+		err = cli.Store.Companion.Sessions.DeleteAllSessions(ctx, from.User)
 		if err != nil {
 			cli.Log.Warnf("Failed to delete all sessions of %s from store after identity change: %v", from, err)
 		}
@@ -299,7 +299,7 @@ func (cli *Client) handlePrivacyTokenNotification(ctx context.Context, node *waB
 			if !ag.OK() {
 				cli.Log.Warnf("privacy_token notification is missing some fields: %v", ag.Error())
 			}
-			err := cli.Store.PrivacyTokens.PutPrivacyTokens(ctx, store.PrivacyToken{
+			err := cli.Store.Companion.PrivacyTokens.PutPrivacyTokens(ctx, store.PrivacyToken{
 				User:      sender,
 				Token:     token,
 				Timestamp: timestamp,
@@ -433,6 +433,9 @@ func (cli *Client) handleNotification(ctx context.Context, node *waBinary.Node) 
 			cli.backgroundIfAsyncAck(func() {
 				cli.sendAck(ctx, node, 0)
 			})
+			return
+		} else if cli.IsRelayTransportMode() {
+			cli.Log.Errorf("Relay transport callback declined notification %s/%v; refusing local notification fallback", node.Tag, node.Attrs["type"])
 			return
 		}
 	}

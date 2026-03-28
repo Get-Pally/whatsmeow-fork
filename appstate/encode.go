@@ -310,7 +310,7 @@ func (proc *Processor) EncodePatch(ctx context.Context, keyID []byte, state Hash
 	}
 
 	warn, err := state.updateHash(mutations, func(indexMAC []byte, _ int) ([]byte, error) {
-		return proc.Store.AppState.GetAppStateMutationMAC(ctx, string(patchInfo.Type), indexMAC)
+		return proc.Store.Companion.AppState.GetAppStateMutationMAC(ctx, string(patchInfo.Type), indexMAC)
 	})
 	if len(warn) > 0 {
 		proc.Log.Warnf("Warnings while updating hash for %s (sending new app state): %+v", patchInfo.Type, warn)

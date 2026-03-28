@@ -23,7 +23,14 @@ var SignalProtobufSerializer = serialize.NewProtoBufSerializer()
 
 var _ store.SignalProtocol = (*Device)(nil)
 
+func (device *Device) transportOnlySignalError(op string) error {
+	return fmt.Errorf("%s unavailable: %w", op, ErrTransportOnlyStoreOperation)
+}
+
 func (device *Device) GetIdentityKeyPair() *identity.KeyPair {
+	if device.TransportOnly || device.IdentityKey == nil || device.IdentityKey.Priv == nil {
+		panic(device.transportOnlySignalError("identity key access"))
+	}
 	return identity.NewKeyPair(
 		identity.NewKey(ecc.NewDjbECPublicKey(*device.IdentityKey.Pub)),
 		ecc.NewDjbECPrivateKey(*device.IdentityKey.Priv),
@@ -35,8 +42,11 @@ func (device *Device) GetLocalRegistrationID() uint32 {
 }
 
 func (device *Device) SaveIdentity(ctx context.Context, address *protocol.SignalAddress, identityKey *identity.Key) error {
+	if device.TransportOnly {
+		return device.transportOnlySignalError("identity persistence")
+	}
 	addrString := address.String()
-	err := device.Identities.PutIdentity(ctx, addrString, identityKey.PublicKey().PublicKey())
+	err := device.Companion.Identities.PutIdentity(ctx, addrString, identityKey.PublicKey().PublicKey())
 	if err != nil {
 		return fmt.Errorf("failed to save identity of %s: %w", addrString, err)
 	}
@@ -44,8 +54,11 @@ func (device *Device) SaveIdentity(ctx context.Context, address *protocol.Signal
 }
 
 func (device *Device) IsTrustedIdentity(ctx context.Context, address *protocol.SignalAddress, identityKey *identity.Key) (bool, error) {
+	if device.TransportOnly {
+		return false, device.transportOnlySignalError("identity trust check")
+	}
 	addrString := address.String()
-	isTrusted, err := device.Identities.IsTrustedIdentity(ctx, addrString, identityKey.PublicKey().PublicKey())
+	isTrusted, err := device.Companion.Identities.IsTrustedIdentity(ctx, addrString, identityKey.PublicKey().PublicKey())
 	if err != nil {
 		return false, fmt.Errorf("failed to check if %s's identity is trusted: %w", addrString, err)
 	}
@@ -53,6 +66,9 @@ func (device *Device) IsTrustedIdentity(ctx context.Context, address *protocol.S
 }
 
 func (device *Device) LoadPreKey(ctx context.Context, id uint32) (*record.PreKey, error) {
+	if device.TransportOnly {
+		return nil, device.transportOnlySignalError("pre-key load")
+	}
 	preKey, err := device.PreKeys.GetPreKey(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load prekey %d: %w", id, err)
@@ -67,6 +83,9 @@ func (device *Device) LoadPreKey(ctx context.Context, id uint32) (*record.PreKey
 }
 
 func (device *Device) RemovePreKey(ctx context.Context, id uint32) error {
+	if device.TransportOnly {
+		return device.transportOnlySignalError("pre-key removal")
+	}
 	err := device.PreKeys.RemovePreKey(ctx, id)
 	if err != nil {
 		return fmt.Errorf("failed to remove prekey %d: %w", id, err)
@@ -83,12 +102,15 @@ func (device *Device) ContainsPreKey(ctx context.Context, preKeyID uint32) (bool
 }
 
 func (device *Device) LoadSession(ctx context.Context, address *protocol.SignalAddress) (*record.Session, error) {
+	if device.TransportOnly {
+		return nil, device.transportOnlySignalError("session load")
+	}
 	addrString := address.String()
 	if sess := getCachedSession(ctx, addrString); sess != nil {
 		return sess, nil
 	}
 
-	rawSess, err := device.Sessions.GetSession(ctx, addrString)
+	rawSess, err := device.Companion.Sessions.GetSession(ctx, addrString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load session with %s: %w", addrString, err)
 	}
@@ -107,12 +129,15 @@ func (device *Device) GetSubDeviceSessions(ctx context.Context, name string) ([]
 }
 
 func (device *Device) StoreSession(ctx context.Context, address *protocol.SignalAddress, record *record.Session) error {
+	if device.TransportOnly {
+		return device.transportOnlySignalError("session persistence")
+	}
 	addrString := address.String()
 	if putCachedSession(ctx, addrString, record) {
 		return nil
 	}
 
-	err := device.Sessions.PutSession(ctx, addrString, record.Serialize())
+	err := device.Companion.Sessions.PutSession(ctx, addrString, record.Serialize())
 	if err != nil {
 		return fmt.Errorf("failed to store session with %s: %w", addrString, err)
 	}
@@ -120,8 +145,11 @@ func (device *Device) StoreSession(ctx context.Context, address *protocol.Signal
 }
 
 func (device *Device) ContainsSession(ctx context.Context, remoteAddress *protocol.SignalAddress) (bool, error) {
+	if device.TransportOnly {
+		return false, device.transportOnlySignalError("session lookup")
+	}
 	addrString := remoteAddress.String()
-	hasSession, err := device.Sessions.HasSession(ctx, addrString)
+	hasSession, err := device.Companion.Sessions.HasSession(ctx, addrString)
 	if err != nil {
 		return false, fmt.Errorf("failed to check if store has session for %s: %w", addrString, err)
 	}
@@ -137,6 +165,9 @@ func (device *Device) DeleteAllSessions(ctx context.Context) error {
 }
 
 func (device *Device) LoadSignedPreKey(ctx context.Context, signedPreKeyID uint32) (*record.SignedPreKey, error) {
+	if device.TransportOnly || device.SignedPreKey == nil || device.SignedPreKey.Priv == nil {
+		return nil, device.transportOnlySignalError("signed pre-key load")
+	}
 	if signedPreKeyID == device.SignedPreKey.KeyID {
 		return record.NewSignedPreKey(signedPreKeyID, 0, ecc.NewECKeyPair(
 			ecc.NewDjbECPublicKey(*device.SignedPreKey.Pub),
@@ -163,9 +194,12 @@ func (device *Device) RemoveSignedPreKey(ctx context.Context, signedPreKeyID uin
 }
 
 func (device *Device) StoreSenderKey(ctx context.Context, senderKeyName *protocol.SenderKeyName, keyRecord *groupRecord.SenderKey) error {
+	if device.TransportOnly {
+		return device.transportOnlySignalError("sender-key persistence")
+	}
 	groupID := senderKeyName.GroupID()
 	senderString := senderKeyName.Sender().String()
-	err := device.SenderKeys.PutSenderKey(ctx, groupID, senderString, keyRecord.Serialize())
+	err := device.Companion.SenderKeys.PutSenderKey(ctx, groupID, senderString, keyRecord.Serialize())
 	if err != nil {
 		return fmt.Errorf("failed to store sender key from %s for %s: %w", senderString, groupID, err)
 	}
@@ -173,9 +207,12 @@ func (device *Device) StoreSenderKey(ctx context.Context, senderKeyName *protoco
 }
 
 func (device *Device) LoadSenderKey(ctx context.Context, senderKeyName *protocol.SenderKeyName) (*groupRecord.SenderKey, error) {
+	if device.TransportOnly {
+		return nil, device.transportOnlySignalError("sender-key load")
+	}
 	groupID := senderKeyName.GroupID()
 	senderString := senderKeyName.Sender().String()
-	rawKey, err := device.SenderKeys.GetSenderKey(ctx, groupID, senderString)
+	rawKey, err := device.Companion.SenderKeys.GetSenderKey(ctx, groupID, senderString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load sender key from %s for %s: %w", senderString, groupID, err)
 	}

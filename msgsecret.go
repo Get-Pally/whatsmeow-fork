@@ -98,7 +98,7 @@ func (cli *Client) decryptMsgSecret(ctx context.Context, msg *events.Message, us
 	if err != nil {
 		return nil, err
 	}
-	baseEncKey, origSender, err := cli.Store.MsgSecrets.GetMessageSecret(ctx, msg.Info.Chat, origSender, origMsgKey.GetID())
+	baseEncKey, origSender, err := cli.Store.Companion.MsgSecrets.GetMessageSecret(ctx, msg.Info.Chat, origSender, origMsgKey.GetID())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get original message secret key: %w", err)
 	}
@@ -120,7 +120,7 @@ func (cli *Client) encryptMsgSecret(ctx context.Context, ownID, chat, origSender
 		return nil, nil, ErrNotLoggedIn
 	}
 
-	baseEncKey, origSender, err := cli.Store.MsgSecrets.GetMessageSecret(ctx, chat, origSender, origMsgID)
+	baseEncKey, origSender, err := cli.Store.Companion.MsgSecrets.GetMessageSecret(ctx, chat, origSender, origMsgID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get original message secret key: %w", err)
 	} else if baseEncKey == nil {

@@ -15,7 +15,33 @@ import (
 	"go.mau.fi/whatsmeow/util/keys"
 )
 
-func TestTransportOnlyDeviceRoundTripUsesPublicKeysOnly(t *testing.T) {
+type stubPreKeyStore struct{}
+
+func (s *stubPreKeyStore) GetOrGenPreKeys(ctx context.Context, count uint32) ([]*keys.PreKey, error) {
+	return nil, nil
+}
+
+func (s *stubPreKeyStore) GenOnePreKey(ctx context.Context) (*keys.PreKey, error) {
+	return nil, nil
+}
+
+func (s *stubPreKeyStore) GetPreKey(ctx context.Context, id uint32) (*keys.PreKey, error) {
+	return nil, nil
+}
+
+func (s *stubPreKeyStore) RemovePreKey(ctx context.Context, id uint32) error {
+	return nil
+}
+
+func (s *stubPreKeyStore) MarkPreKeysAsUploaded(ctx context.Context, upToID uint32) error {
+	return nil
+}
+
+func (s *stubPreKeyStore) UploadedPreKeyCount(ctx context.Context) (int, error) {
+	return 0, nil
+}
+
+func TestTransportOnlyDeviceRoundTripDoesNotPersistCompanionBootstrapKeys(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create sqlmock database: %v", err)
@@ -60,18 +86,18 @@ func TestTransportOnlyDeviceRoundTripUsesPublicKeysOnly(t *testing.T) {
 		WithArgs(
 			jid,
 			lid,
-			device.RegistrationID,
+			uint32(0),
 			true,
 			noiseKey.Priv[:],
-			identityPub[:],
-			signedPreKeyPub[:],
-			device.SignedPreKey.KeyID,
-			signedPreKeySig[:],
-			device.AdvSecretKey[:],
-			device.Account.Details,
-			device.Account.AccountSignature,
-			device.Account.AccountSignatureKey,
-			device.Account.DeviceSignature,
+			make([]byte, 32),
+			make([]byte, 32),
+			uint32(0),
+			make([]byte, 64),
+			make([]byte, 32),
+			[]byte{},
+			make([]byte, 64),
+			make([]byte, 32),
+			make([]byte, 64),
 			device.Platform,
 			device.BusinessName,
 			device.PushName,
@@ -92,18 +118,18 @@ func TestTransportOnlyDeviceRoundTripUsesPublicKeysOnly(t *testing.T) {
 	}).AddRow(
 		jid,
 		lid,
-		device.RegistrationID,
+		0,
 		true,
 		noiseKey.Priv[:],
-		identityPub[:],
-		signedPreKeyPub[:],
-		device.SignedPreKey.KeyID,
-		signedPreKeySig[:],
-		device.AdvSecretKey[:],
-		device.Account.Details,
-		device.Account.AccountSignature,
-		device.Account.AccountSignatureKey,
-		device.Account.DeviceSignature,
+		make([]byte, 32),
+		make([]byte, 32),
+		0,
+		make([]byte, 64),
+		make([]byte, 32),
+		[]byte{},
+		make([]byte, 64),
+		make([]byte, 32),
+		make([]byte, 64),
 		device.Platform,
 		device.BusinessName,
 		device.PushName,
@@ -119,26 +145,93 @@ func TestTransportOnlyDeviceRoundTripUsesPublicKeysOnly(t *testing.T) {
 	if !loaded.TransportOnly {
 		t.Fatal("expected loaded device to remain transport-only")
 	}
-	if loaded.IdentityKey == nil || loaded.IdentityKey.Pub == nil {
-		t.Fatal("expected loaded device to keep identity public key")
+	if loaded.RegistrationID != 0 {
+		t.Fatalf("expected registration id to be scrubbed, got %d", loaded.RegistrationID)
 	}
-	if loaded.IdentityKey.Priv != nil {
-		t.Fatal("expected loaded device identity private key to remain nil")
+	if loaded.IdentityKey != nil {
+		t.Fatalf("expected transport-only reload to omit companion identity public key, got %#v", loaded.IdentityKey)
 	}
-	if got := loaded.IdentityKey.Pub[:]; string(got) != string(identityPub[:]) {
-		t.Fatalf("unexpected loaded identity public key: %x", got)
+	if loaded.SignedPreKey != nil {
+		t.Fatalf("expected transport-only reload to omit companion signed pre-key, got %#v", loaded.SignedPreKey)
 	}
-	if loaded.SignedPreKey == nil || loaded.SignedPreKey.Pub == nil {
-		t.Fatal("expected loaded device to keep signed pre-key public key")
+	if loaded.AdvSecretKey != nil {
+		t.Fatalf("expected transport-only reload to omit adv secret, got %x", loaded.AdvSecretKey)
 	}
-	if loaded.SignedPreKey.Priv != nil {
-		t.Fatal("expected loaded signed pre-key private key to remain nil")
+	if loaded.Account != nil {
+		t.Fatalf("expected transport-only reload to omit adv account, got %#v", loaded.Account)
 	}
-	if got := loaded.SignedPreKey.Pub[:]; string(got) != string(signedPreKeyPub[:]) {
-		t.Fatalf("unexpected loaded signed pre-key public key: %x", got)
+	if _, ok := loaded.Companion.Identities.(*store.NoopStore); !ok {
+		t.Fatalf("expected transport-only identity store to be a noop store, got %T", loaded.Companion.Identities)
+	}
+	if _, ok := loaded.Companion.Sessions.(*store.NoopStore); !ok {
+		t.Fatalf("expected transport-only session store to be a noop store, got %T", loaded.Companion.Sessions)
+	}
+	if _, ok := loaded.Companion.SenderKeys.(*store.NoopStore); !ok {
+		t.Fatalf("expected transport-only sender-key store to be a noop store, got %T", loaded.Companion.SenderKeys)
+	}
+	if _, ok := loaded.Companion.AppStateKeys.(*store.NoopStore); !ok {
+		t.Fatalf("expected transport-only appstate-key store to be a noop store, got %T", loaded.Companion.AppStateKeys)
+	}
+	if _, ok := loaded.Companion.MsgSecrets.(*store.NoopStore); !ok {
+		t.Fatalf("expected transport-only msg-secret store to be a noop store, got %T", loaded.Companion.MsgSecrets)
+	}
+	if _, ok := loaded.Companion.PrivacyTokens.(*store.NoopStore); !ok {
+		t.Fatalf("expected transport-only privacy-token store to be a noop store, got %T", loaded.Companion.PrivacyTokens)
 	}
 
 	if err = mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("sqlmock expectations were not met: %v", err)
+	}
+}
+
+func TestTransportOnlyInitializeDevicePreservesExternalPreKeyStore(t *testing.T) {
+	container := &Container{}
+	externalPreKeys := &stubPreKeyStore{}
+	jid := types.NewJID("15551234567", types.DefaultUserServer)
+
+	device := &store.Device{
+		ID:            &jid,
+		TransportOnly: true,
+		PreKeys:       externalPreKeys,
+	}
+
+	container.initializeDevice(device)
+
+	if device.PreKeys != externalPreKeys {
+		t.Fatalf("expected transport-only device to preserve external pre-key store, got %T", device.PreKeys)
+	}
+	if _, ok := device.Companion.Identities.(*store.NoopStore); !ok {
+		t.Fatalf("expected transport-only identity store to be noop after initialization, got %T", device.Companion.Identities)
+	}
+	if _, ok := device.Companion.AppState.(*store.NoopStore); !ok {
+		t.Fatalf("expected transport-only appstate store to be noop after initialization, got %T", device.Companion.AppState)
+	}
+}
+
+func TestNewTransportOnlyDeviceOmitsCompanionBootstrapMaterial(t *testing.T) {
+	container := &Container{}
+
+	device := container.NewTransportOnlyDevice()
+
+	if !device.TransportOnly {
+		t.Fatal("expected transport-only device")
+	}
+	if device.NoiseKey == nil || device.NoiseKey.Priv == nil {
+		t.Fatal("expected transport-only device to generate only a noise key")
+	}
+	if device.IdentityKey != nil {
+		t.Fatalf("expected transport-only device to omit identity key, got %#v", device.IdentityKey)
+	}
+	if device.SignedPreKey != nil {
+		t.Fatalf("expected transport-only device to omit signed pre-key, got %#v", device.SignedPreKey)
+	}
+	if device.RegistrationID != 0 {
+		t.Fatalf("expected transport-only device registration id to be zero, got %d", device.RegistrationID)
+	}
+	if device.AdvSecretKey != nil {
+		t.Fatalf("expected transport-only device to omit adv secret, got %x", device.AdvSecretKey)
+	}
+	if device.Account != nil {
+		t.Fatalf("expected transport-only device to omit adv account, got %#v", device.Account)
 	}
 }

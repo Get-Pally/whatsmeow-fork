@@ -91,6 +91,38 @@ type RelayMessageResponse struct {
 
 	// ServerData is the raw ack node from the server.
 	ServerData []byte
+
+	// SentNode is the raw outbound node that was transmitted to WhatsApp.
+	SentNode []byte
+}
+
+// SendRelayNode sends a fully client-built binary node through the transport unchanged.
+//
+// The node must already contain the message id and any required transport attributes.
+func (cli *Client) SendRelayNode(
+	ctx context.Context,
+	node *waBinary.Node,
+	fallbackTimestamp time.Time,
+) (*RelayMessageResponse, error) {
+	if node == nil {
+		return nil, fmt.Errorf("relay node is required")
+	}
+	ag := node.AttrGetter()
+	msgID := ag.OptionalString("id")
+	if msgID == "" {
+		return nil, fmt.Errorf("relay node is missing message id")
+	}
+	if fallbackTimestamp.IsZero() {
+		fallbackTimestamp = ag.UnixTime("t")
+		if fallbackTimestamp.IsZero() {
+			fallbackTimestamp = time.Now()
+		}
+	}
+	resp, err := cli.sendRelayNodeAndWait(ctx, types.MessageID(msgID), fallbackTimestamp, node)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send relay node: %w", err)
+	}
+	return resp, nil
 }
 
 // RelayParticipantHash calculates the WhatsApp participant hash used in relay sends.
@@ -459,6 +491,7 @@ func (cli *Client) sendRelayNodeAndWait(
 		Timestamp:       ag.UnixTime("t"),
 		ServerID:        types.MessageServerID(ag.OptionalInt("server_id")),
 		ParticipantHash: ag.OptionalString("phash"),
+		SentNode:        data,
 	}
 	if resp.Timestamp.IsZero() {
 		resp.Timestamp = fallbackTimestamp

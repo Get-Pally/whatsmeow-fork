@@ -226,15 +226,15 @@ func (proc *Processor) decodeMutations(
 }
 
 func (proc *Processor) storeMACs(ctx context.Context, name WAPatchName, currentState HashState, out *patchOutput) error {
-	err := proc.Store.AppState.PutAppStateVersion(ctx, string(name), currentState.Version, currentState.Hash)
+	err := proc.Store.Companion.AppState.PutAppStateVersion(ctx, string(name), currentState.Version, currentState.Hash)
 	if err != nil {
 		return fmt.Errorf("failed to update app state version in the database: %w", err)
 	}
-	err = proc.Store.AppState.DeleteAppStateMutationMACs(ctx, string(name), out.RemovedMACs)
+	err = proc.Store.Companion.AppState.DeleteAppStateMutationMACs(ctx, string(name), out.RemovedMACs)
 	if err != nil {
 		return fmt.Errorf("failed to remove deleted mutation MACs from the database: %w", err)
 	}
-	err = proc.Store.AppState.PutAppStateMutationMACs(ctx, string(name), currentState.Version, out.AddedMACs)
+	err = proc.Store.Companion.AppState.PutAppStateMutationMACs(ctx, string(name), currentState.Version, out.AddedMACs)
 	if err != nil {
 		return fmt.Errorf("failed to insert added mutation MACs to the database: %w", err)
 	}
@@ -331,7 +331,7 @@ func (proc *Processor) validatePatch(
 			}
 		}
 		// Previous value not found in current patch, look in the database
-		return proc.Store.AppState.GetAppStateMutationMAC(ctx, string(patchName), indexMAC)
+		return proc.Store.Companion.AppState.GetAppStateMutationMAC(ctx, string(patchName), indexMAC)
 	})
 	if err != nil {
 		err = fmt.Errorf("failed to update state hash: %w", err)

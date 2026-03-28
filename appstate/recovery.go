@@ -81,15 +81,15 @@ func (proc *Processor) ProcessRecovery(ctx context.Context, recovery *waSyncdSna
 			PatchVersion: version,
 		}
 	}
-	err := proc.Store.AppState.DeleteAppStateVersion(ctx, name)
+	err := proc.Store.Companion.AppState.DeleteAppStateVersion(ctx, name)
 	if err != nil {
 		return mutations, fmt.Errorf("failed to reset app state version in database: %w", err)
 	}
-	err = proc.Store.AppState.PutAppStateVersion(ctx, name, version, *(*[128]byte)(recovery.GetCollectionLthash()))
+	err = proc.Store.Companion.AppState.PutAppStateVersion(ctx, name, version, *(*[128]byte)(recovery.GetCollectionLthash()))
 	if err != nil {
 		return mutations, fmt.Errorf("failed to update app state version in the database: %w", err)
 	}
-	err = proc.Store.AppState.PutAppStateMutationMACs(ctx, name, version, macs)
+	err = proc.Store.Companion.AppState.PutAppStateMutationMACs(ctx, name, version, macs)
 	if err != nil {
 		return mutations, fmt.Errorf("failed to insert added mutation MACs to the database: %w", err)
 	}

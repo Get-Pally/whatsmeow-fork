@@ -36,11 +36,13 @@ var (
 	ErrNoPrivacyToken   = errors.New("no privacy token stored")
 	ErrNoDeviceIdentity = errors.New("no device identity stored")
 	ErrNoSignedPreKey   = errors.New("no signed pre-key stored")
+	ErrNoADVSecret      = errors.New("no adv secret stored")
 
 	ErrRelayTransportRequiresPreEncryptedSend     = errors.New("relay transport mode requires pre-encrypted relay send APIs")
 	ErrRelayTransportRequiresTransportOnlyStore   = errors.New("relay transport mode requires a transport-only device store with no private Signal keys")
 	ErrRelayTransportRequiresPairSuccessCallback  = errors.New("relay transport mode requires a pair-success callback during linking")
 	ErrRelayTransportRequiresMessageCallback      = errors.New("relay transport mode requires an encrypted-message relay callback")
+	ErrRelayTransportRequiresSKDMCallback         = errors.New("relay transport mode requires a sender-key-distribution relay callback")
 	ErrRelayTransportRequiresNotificationCallback = errors.New("relay transport mode requires a transport-notification relay callback")
 	ErrRelayTransportRequiresRetryCallback        = errors.New("relay transport mode requires a retry-receipt relay callback")
 

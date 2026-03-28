@@ -383,7 +383,7 @@ func (cli *Client) SendMessage(ctx context.Context, to types.JID, message *waE2E
 	}
 
 	if message.GetMessageContextInfo().GetMessageSecret() != nil {
-		err = cli.Store.MsgSecrets.PutMessageSecret(ctx, to, ownID, req.ID, message.GetMessageContextInfo().GetMessageSecret())
+		err = cli.Store.Companion.MsgSecrets.PutMessageSecret(ctx, to, ownID, req.ID, message.GetMessageContextInfo().GetMessageSecret())
 		if err != nil {
 			cli.Log.Warnf("Failed to store message secret key for outgoing message %s: %v", req.ID, err)
 		} else {
@@ -865,7 +865,7 @@ func (cli *Client) sendDM(
 		node.Content = append(node.GetChildren(), cli.getMessageReportingToken(messagePlaintext, message, ownID, to, id))
 	}
 
-	if tcToken, err := cli.Store.PrivacyTokens.GetPrivacyToken(ctx, to); err != nil {
+	if tcToken, err := cli.Store.Companion.PrivacyTokens.GetPrivacyToken(ctx, to); err != nil {
 		cli.Log.Warnf("Failed to get privacy token for %s: %v", to, err)
 	} else if tcToken != nil {
 		node.Content = append(node.GetChildren(), waBinary.Node{

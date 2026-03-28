@@ -222,7 +222,7 @@ func (cli *Client) handlePair(ctx context.Context, deviceIdentityBytes []byte, r
 		return &PairDatabaseError{"failed to save device store", err}
 	}
 	cli.StoreLIDPNMapping(ctx, lid, jid)
-	err = cli.Store.Identities.PutIdentity(ctx, mainDeviceLID.SignalAddress().String(), mainDeviceIdentity)
+	err = cli.Store.Companion.Identities.PutIdentity(ctx, mainDeviceLID.SignalAddress().String(), mainDeviceIdentity)
 	if err != nil {
 		_ = cli.Store.Delete(ctx)
 		cli.sendPairError(ctx, reqID, 500, "internal-error")
@@ -286,27 +286,18 @@ func (cli *Client) handleRelayPair(ctx context.Context, deviceIdentityBytes []by
 		return &PairProtoError{"relay account identity missing account signature key", ErrPairInvalidDeviceSignature}
 	}
 
-	mainDeviceLID := lid
-	mainDeviceLID.Device = 0
-	mainDeviceIdentity := *(*[32]byte)(account.AccountSignatureKey)
-
-	cli.Store.Account = &account
 	cli.Store.ID = &jid
 	cli.Store.LID = lid
 	cli.Store.BusinessName = businessName
 	cli.Store.Platform = platform
+	cli.Store.Account = nil
+	cli.Store.AdvSecretKey = nil
 	err = cli.Store.Save(ctx)
 	if err != nil {
 		cli.sendPairError(ctx, reqID, 500, "internal-error")
 		return &PairDatabaseError{"failed to save device store", err}
 	}
 	cli.StoreLIDPNMapping(ctx, lid, jid)
-	err = cli.Store.Identities.PutIdentity(ctx, mainDeviceLID.SignalAddress().String(), mainDeviceIdentity)
-	if err != nil {
-		_ = cli.Store.Delete(ctx)
-		cli.sendPairError(ctx, reqID, 500, "internal-error")
-		return &PairDatabaseError{"failed to store main device identity", err}
-	}
 
 	cli.expectDisconnect()
 

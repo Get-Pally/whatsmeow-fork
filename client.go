@@ -260,6 +260,10 @@ func NewClient(deviceStore *store.Device, log waLog.Logger) *Client {
 	if log == nil {
 		log = waLog.Noop
 	}
+	var appStateProcessor *appstate.Processor
+	if deviceStore != nil && !deviceStore.TransportOnly {
+		appStateProcessor = appstate.NewProcessor(deviceStore, log.Sub("AppState"))
+	}
 	uniqueIDPrefix := random.Bytes(2)
 	baseHTTPClient := &http.Client{
 		Transport: (http.DefaultTransport.(*http.Transport)).Clone(),
@@ -277,7 +281,7 @@ func NewClient(deviceStore *store.Device, log waLog.Logger) *Client {
 		eventHandlers:      make([]wrappedEventHandler, 0, 1),
 		messageRetries:     make(map[string]int),
 		handlerQueue:       make(chan *waBinary.Node, handlerQueueSize),
-		appStateProc:       appstate.NewProcessor(deviceStore, log.Sub("AppState")),
+		appStateProc:       appStateProcessor,
 		socketWait:         make(chan struct{}),
 		expectedDisconnect: exsync.NewEvent(),
 
@@ -339,24 +343,31 @@ func (cli *Client) validateRelayTransportConfiguration() error {
 		return ErrClientIsNil
 	} else if !cli.Store.TransportOnly {
 		return ErrRelayTransportRequiresTransportOnlyStore
-	} else if cli.Store.IdentityKey == nil || cli.Store.IdentityKey.Pub == nil {
-		return ErrNoDeviceIdentity
-	} else if cli.Store.IdentityKey.Priv != nil {
+	} else if cli.Store.IdentityKey != nil && cli.Store.IdentityKey.Priv != nil {
 		return ErrRelayTransportRequiresTransportOnlyStore
-	} else if cli.Store.SignedPreKey == nil || cli.Store.SignedPreKey.Pub == nil || cli.Store.SignedPreKey.Signature == nil {
-		return ErrNoSignedPreKey
-	} else if cli.Store.SignedPreKey.Priv != nil {
+	} else if cli.Store.SignedPreKey != nil && cli.Store.SignedPreKey.Priv != nil {
 		return ErrRelayTransportRequiresTransportOnlyStore
 	}
 
 	if cli.Store.ID == nil {
+		if cli.Store.IdentityKey == nil || cli.Store.IdentityKey.Pub == nil {
+			return ErrNoDeviceIdentity
+		} else if cli.Store.SignedPreKey == nil || cli.Store.SignedPreKey.Pub == nil || cli.Store.SignedPreKey.Signature == nil {
+			return ErrNoSignedPreKey
+		} else if len(cli.Store.AdvSecretKey) != 32 {
+			return ErrNoADVSecret
+		}
 		if cli.RelayPairSuccessCallback == nil {
 			return ErrRelayTransportRequiresPairSuccessCallback
 		}
 		return nil
+	} else if cli.Store.IdentityKey == nil || cli.Store.IdentityKey.Pub == nil || cli.Store.SignedPreKey == nil || cli.Store.SignedPreKey.Pub == nil || cli.Store.SignedPreKey.Signature == nil {
+		cli.Log.Debugf("Relay transport reconnecting linked device %s without stored companion bootstrap keys", cli.Store.GetJID())
 	}
 	if cli.RelayMessageCallback == nil {
 		return ErrRelayTransportRequiresMessageCallback
+	} else if cli.RelaySkdmCallback == nil {
+		return ErrRelayTransportRequiresSKDMCallback
 	} else if cli.RelayNotificationCallback == nil {
 		return ErrRelayTransportRequiresNotificationCallback
 	} else if cli.RelayRetryReceiptCallback == nil {

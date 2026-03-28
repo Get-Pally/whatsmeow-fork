@@ -566,7 +566,7 @@ func (cli *Client) GetProfilePictureInfo(ctx context.Context, jid types.JID, par
 		}
 
 		var pictureContent []waBinary.Node
-		if token, _ := cli.Store.PrivacyTokens.GetPrivacyToken(ctx, jid); token != nil {
+		if token, _ := cli.Store.Companion.PrivacyTokens.GetPrivacyToken(ctx, jid); token != nil {
 			pictureContent = []waBinary.Node{{
 				Tag:     "tctoken",
 				Content: token.Token,
