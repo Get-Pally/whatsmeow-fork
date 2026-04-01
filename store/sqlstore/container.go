@@ -232,7 +232,9 @@ const (
 					push_name=excluded.push_name,
 				lid_migration_ts=excluded.lid_migration_ts
 	`
-	deleteDeviceQuery = `DELETE FROM whatsmeow_device WHERE jid=$1`
+	deleteDeviceQuery        = `DELETE FROM whatsmeow_device WHERE jid=$1`
+	deletePrivacyTokensQuery = `DELETE FROM whatsmeow_privacy_tokens WHERE our_jid=$1`
+	countDevicesQuery        = `SELECT COUNT(*) FROM whatsmeow_device`
 )
 
 // NewDevice creates a new device in this database.
@@ -306,10 +308,10 @@ func (c *Container) PutDevice(ctx context.Context, device *store.Device) error {
 	advAccountSig := make([]byte, 64)
 	advAccountSigKey := make([]byte, 32)
 	advDeviceSig := make([]byte, 64)
-	if !device.TransportOnly && device.Account != nil {
-		if len(device.AdvSecretKey) == 32 {
-			advKey = device.AdvSecretKey
-		}
+	if !device.TransportOnly && len(device.AdvSecretKey) == 32 {
+		advKey = device.AdvSecretKey
+	}
+	if device.Account != nil {
 		advDetails = device.Account.Details
 		if len(device.Account.AccountSignature) == 64 {
 			advAccountSig = device.Account.AccountSignature
@@ -382,6 +384,25 @@ func (c *Container) DeleteDevice(ctx context.Context, store *store.Device) error
 	if store.ID == nil {
 		return ErrDeviceIDMustBeSet
 	}
-	_, err := c.db.Exec(ctx, deleteDeviceQuery, store.ID)
-	return err
+	return c.db.DoTxn(ctx, nil, func(ctx context.Context) error {
+		_, err := c.db.Exec(ctx, deletePrivacyTokensQuery, store.ID)
+		if err != nil {
+			return err
+		}
+
+		_, err = c.db.Exec(ctx, deleteDeviceQuery, store.ID)
+		if err != nil {
+			return err
+		}
+
+		var remainingDevices int
+		err = c.db.QueryRow(ctx, countDevicesQuery).Scan(&remainingDevices)
+		if err != nil {
+			return err
+		}
+		if remainingDevices == 0 && c.LIDMap != nil {
+			return c.LIDMap.DeleteAll(ctx)
+		}
+		return nil
+	})
 }

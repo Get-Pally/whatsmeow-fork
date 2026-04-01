@@ -704,7 +704,7 @@ func (s *SQLStore) PutAllContactNames(ctx context.Context, contacts []store.Cont
 		return t.JID
 	})
 	if origLen != len(contacts) {
-		s.log.Warnf("%d duplicate contacts found in PutAllContactNames", origLen-len(contacts))
+		s.log.Debugf("%d duplicate contacts found in PutAllContactNames", origLen-len(contacts))
 	}
 	err := s.db.DoTxn(ctx, nil, func(ctx context.Context) error {
 		for slice := range slices.Chunk(contacts, contactBatchSize) {
@@ -735,7 +735,7 @@ func (s *SQLStore) PutManyRedactedPhones(ctx context.Context, entries []store.Re
 		return t.JID
 	})
 	if origLen != len(entries) {
-		s.log.Warnf("%d duplicate contacts found in PutManyRedactedPhones", origLen-len(entries))
+		s.log.Debugf("%d duplicate contacts found in PutManyRedactedPhones", origLen-len(entries))
 	}
 	err := s.db.DoTxn(ctx, nil, func(ctx context.Context) error {
 		for slice := range slices.Chunk(entries, contactBatchSize) {

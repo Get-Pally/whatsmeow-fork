@@ -41,7 +41,7 @@ func (s *stubPreKeyStore) UploadedPreKeyCount(ctx context.Context) (int, error) 
 	return 0, nil
 }
 
-func TestTransportOnlyDeviceRoundTripDoesNotPersistCompanionBootstrapKeys(t *testing.T) {
+func TestTransportOnlyDeviceRoundTripPersistsADVAccountButNotCompanionBootstrapKeys(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatalf("failed to create sqlmock database: %v", err)
@@ -57,12 +57,19 @@ func TestTransportOnlyDeviceRoundTripDoesNotPersistCompanionBootstrapKeys(t *tes
 	var identityPub [32]byte
 	var signedPreKeyPub [32]byte
 	var signedPreKeySig [64]byte
+	advDetails := []byte("details")
+	advAccountSig := make([]byte, 64)
+	advAccountSigKey := make([]byte, 32)
+	advDeviceSig := make([]byte, 64)
 	for i := range identityPub {
 		identityPub[i] = byte(i + 1)
 		signedPreKeyPub[i] = byte(i + 33)
+		advAccountSigKey[i] = byte(i + 97)
 	}
 	for i := range signedPreKeySig {
 		signedPreKeySig[i] = byte(i + 65)
+		advAccountSig[i] = byte(i + 17)
+		advDeviceSig[i] = byte(i + 33)
 	}
 	device := &store.Device{
 		Container:             container,
@@ -77,7 +84,7 @@ func TestTransportOnlyDeviceRoundTripDoesNotPersistCompanionBootstrapKeys(t *tes
 		Platform:              "ios",
 		BusinessName:          "Test Business",
 		PushName:              "Test Device",
-		Account:               &waAdv.ADVSignedDeviceIdentity{Details: []byte("details"), AccountSignature: []byte("account-signature"), AccountSignatureKey: []byte("account-key"), DeviceSignature: []byte("device-signature")},
+		Account:               &waAdv.ADVSignedDeviceIdentity{Details: advDetails, AccountSignature: advAccountSig, AccountSignatureKey: advAccountSigKey, DeviceSignature: advDeviceSig},
 		FacebookUUID:          uuid.Nil,
 		LIDMigrationTimestamp: time.Unix(0, 0).UTC().Unix(),
 	}
@@ -94,10 +101,10 @@ func TestTransportOnlyDeviceRoundTripDoesNotPersistCompanionBootstrapKeys(t *tes
 			uint32(0),
 			make([]byte, 64),
 			make([]byte, 32),
-			[]byte{},
-			make([]byte, 64),
-			make([]byte, 32),
-			make([]byte, 64),
+			advDetails,
+			advAccountSig,
+			advAccountSigKey,
+			advDeviceSig,
 			device.Platform,
 			device.BusinessName,
 			device.PushName,
@@ -126,10 +133,10 @@ func TestTransportOnlyDeviceRoundTripDoesNotPersistCompanionBootstrapKeys(t *tes
 		0,
 		make([]byte, 64),
 		make([]byte, 32),
-		[]byte{},
-		make([]byte, 64),
-		make([]byte, 32),
-		make([]byte, 64),
+		advDetails,
+		advAccountSig,
+		advAccountSigKey,
+		advDeviceSig,
 		device.Platform,
 		device.BusinessName,
 		device.PushName,
@@ -157,8 +164,11 @@ func TestTransportOnlyDeviceRoundTripDoesNotPersistCompanionBootstrapKeys(t *tes
 	if loaded.AdvSecretKey != nil {
 		t.Fatalf("expected transport-only reload to omit adv secret, got %x", loaded.AdvSecretKey)
 	}
-	if loaded.Account != nil {
-		t.Fatalf("expected transport-only reload to omit adv account, got %#v", loaded.Account)
+	if loaded.Account == nil {
+		t.Fatal("expected transport-only reload to retain adv account")
+	}
+	if string(loaded.Account.Details) != "details" {
+		t.Fatalf("unexpected adv account details after reload: %q", loaded.Account.Details)
 	}
 	if _, ok := loaded.Companion.Identities.(*store.NoopStore); !ok {
 		t.Fatalf("expected transport-only identity store to be a noop store, got %T", loaded.Companion.Identities)

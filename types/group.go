@@ -17,6 +17,19 @@ const (
 	GroupMemberAddModeAllMember GroupMemberAddMode = "all_member_add"
 )
 
+type GroupMemberLinkMode string
+
+const (
+	GroupMemberLinkModeAdmin     GroupMemberLinkMode = "admin_link"
+	GroupMemberLinkModeAllMember GroupMemberLinkMode = "all_member_link"
+)
+
+type GroupMemberShareGroupHistoryMode string
+
+const (
+	GroupMemberShareGroupHistoryModeAllMember GroupMemberShareGroupHistoryMode = "all_member_share"
+)
+
 // GroupInfo contains basic information about a group chat on WhatsApp.
 type GroupInfo struct {
 	JID      JID
@@ -29,6 +42,9 @@ type GroupInfo struct {
 	GroupAnnounce
 	GroupEphemeral
 	GroupIncognito
+	GroupHidden
+	GroupLimitSharing
+	GroupGeneralChat
 
 	GroupParent
 	GroupLinkedParent
@@ -43,7 +59,10 @@ type GroupInfo struct {
 	Participants         []GroupParticipant
 	ParticipantCount     int
 
-	MemberAddMode GroupMemberAddMode
+	MemberAddMode                 GroupMemberAddMode
+	MemberLinkMode                GroupMemberLinkMode
+	MemberShareGroupHistoryMode   GroupMemberShareGroupHistoryMode
+	AllowNonAdminSubGroupCreation bool
 
 	// Suspended indicates whether the group is currently paused/suspended.
 	Suspended bool
@@ -97,6 +116,18 @@ type GroupAnnounce struct {
 
 type GroupIncognito struct {
 	IsIncognito bool
+}
+
+type GroupHidden struct {
+	IsHiddenGroup bool
+}
+
+type GroupLimitSharing struct {
+	IsLimitSharingEnabled bool
+}
+
+type GroupGeneralChat struct {
+	IsGeneralChat bool
 }
 
 // GroupParticipant contains info about a participant of a WhatsApp group chat.

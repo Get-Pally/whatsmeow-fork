@@ -435,8 +435,13 @@ func (cli *Client) handleNotification(ctx context.Context, node *waBinary.Node) 
 			})
 			return
 		} else if cli.IsRelayTransportMode() {
-			cli.Log.Errorf("Relay transport callback declined notification %s/%v; refusing local notification fallback", node.Tag, node.Attrs["type"])
-			return
+			notifType := node.AttrGetter().OptionalString("type")
+			if allowRelayTransportNotificationFallback(notifType) {
+				cli.Log.Debugf("Relay transport callback declined notification %s/%v; allowing transport-safe local fallback", node.Tag, node.Attrs["type"])
+			} else {
+				cli.Log.Errorf("Relay transport callback declined notification %s/%v; refusing local notification fallback", node.Tag, node.Attrs["type"])
+				return
+			}
 		}
 	}
 
@@ -491,4 +496,8 @@ func (cli *Client) handleNotification(ctx context.Context, node *waBinary.Node) 
 	default:
 		cli.Log.Debugf("Unhandled notification with type %s", notifType)
 	}
+}
+
+func allowRelayTransportNotificationFallback(notifType string) bool {
+	return false
 }

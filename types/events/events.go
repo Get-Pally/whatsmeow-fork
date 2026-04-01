@@ -471,7 +471,13 @@ type GroupInfo struct {
 	Announce  *types.GroupAnnounce  // Group announce status change (can only admins send messages?)
 	Ephemeral *types.GroupEphemeral // Disappearing messages change
 
-	MembershipApprovalMode *types.GroupMembershipApprovalMode // Membership approval mode change
+	MembershipApprovalMode        *types.GroupMembershipApprovalMode // Membership approval mode change
+	MemberLinkMode                *types.GroupMemberLinkMode
+	MemberShareGroupHistoryMode   *types.GroupMemberShareGroupHistoryMode
+	AllowNonAdminSubGroupCreation *bool
+	HiddenGroup                   *types.GroupHidden
+	LimitSharing                  *types.GroupLimitSharing
+	GeneralChat                   *types.GroupGeneralChat
 
 	Delete *types.GroupDelete
 

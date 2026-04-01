@@ -18,6 +18,7 @@ import (
 	"go.mau.fi/libsignal/util/optional"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
+	waStore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/util/keys"
 )
@@ -79,6 +80,10 @@ func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 		cli.Log.Errorf("Failed to get prekeys to upload: %v", err)
 		return
 	}
+	if len(preKeys) == 0 {
+		cli.Log.Debugf("Skipping prekey upload request because there are no new prekeys to upload")
+		return
+	}
 	cli.Log.Infof("Uploading %d new prekeys to server", len(preKeys))
 	_, err = cli.sendIQ(ctx, infoQuery{
 		Namespace: "encrypt",
@@ -97,13 +102,20 @@ func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 		return
 	}
 	cli.Log.Debugf("Got response to uploading prekeys")
-	err = cli.Store.PreKeys.MarkPreKeysAsUploaded(ctx, preKeys[len(preKeys)-1].KeyID)
+	err = markUploadedPreKeys(ctx, cli.Store.PreKeys, preKeys)
 	if err != nil {
 		cli.Log.Warnf("Failed to mark prekeys as uploaded: %v", err)
 		return
 	}
 	cli.lastPreKeyUpload = time.Now()
 	return
+}
+
+func markUploadedPreKeys(ctx context.Context, preKeyStore waStore.PreKeyStore, preKeys []*keys.PreKey) error {
+	if len(preKeys) == 0 {
+		return nil
+	}
+	return preKeyStore.MarkPreKeysAsUploaded(ctx, preKeys[len(preKeys)-1].KeyID)
 }
 
 func (cli *Client) fetchPreKeysNoError(ctx context.Context, retryDevices []types.JID) map[types.JID]*prekey.Bundle {

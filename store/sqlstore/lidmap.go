@@ -46,6 +46,7 @@ func NewCachedLIDMap(db *dbutil.Database) *CachedLIDMap {
 
 const (
 	deleteExistingLIDMappingQuery = `DELETE FROM whatsmeow_lid_map WHERE (lid<>$1 AND pn=$2)`
+	deleteAllLIDMappingsQuery     = `DELETE FROM whatsmeow_lid_map`
 	putLIDMappingQuery            = `
 		INSERT INTO whatsmeow_lid_map (lid, pn)
 		VALUES ($1, $2)
@@ -260,5 +261,20 @@ func (s *CachedLIDMap) unlockedPutLIDMapping(ctx context.Context, lid, pn types.
 	}
 	s.pnToLIDCache[pn.User] = lid.User
 	s.lidToPNCache[lid.User] = pn.User
+	return nil
+}
+
+func (s *CachedLIDMap) DeleteAll(ctx context.Context) error {
+	s.lidCacheLock.Lock()
+	defer s.lidCacheLock.Unlock()
+
+	_, err := s.db.Exec(ctx, deleteAllLIDMappingsQuery)
+	if err != nil {
+		return err
+	}
+
+	clear(s.pnToLIDCache)
+	clear(s.lidToPNCache)
+	s.cacheFilled = true
 	return nil
 }

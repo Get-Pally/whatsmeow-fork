@@ -12,6 +12,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -143,43 +144,9 @@ func (cli *Client) handlePair(ctx context.Context, deviceIdentityBytes []byte, r
 		return cli.handleRelayPair(ctx, deviceIdentityBytes, reqID, businessName, platform, jid, lid)
 	}
 
-	var deviceIdentityContainer waAdv.ADVSignedDeviceIdentityHMAC
-	err := proto.Unmarshal(deviceIdentityBytes, &deviceIdentityContainer)
+	deviceIdentity, deviceIdentityDetails, err := cli.parseAndValidatePairSuccess(ctx, deviceIdentityBytes, reqID)
 	if err != nil {
-		cli.sendPairError(ctx, reqID, 500, "internal-error")
-		return &PairProtoError{"failed to parse device identity container in pair success message", err}
-	}
-
-	h := hmac.New(sha256.New, cli.Store.AdvSecretKey)
-	if deviceIdentityContainer.GetAccountType() == waAdv.ADVEncryptionType_HOSTED {
-		h.Write(AdvHostedAccountSignaturePrefix)
-		//cli.Store.IsHosted = true
-	}
-	h.Write(deviceIdentityContainer.Details)
-
-	if !bytes.Equal(h.Sum(nil), deviceIdentityContainer.HMAC) {
-		cli.Log.Warnf("Invalid HMAC from pair success message")
-		cli.sendPairError(ctx, reqID, 401, "hmac-mismatch")
-		return ErrPairInvalidDeviceIdentityHMAC
-	}
-
-	var deviceIdentity waAdv.ADVSignedDeviceIdentity
-	err = proto.Unmarshal(deviceIdentityContainer.Details, &deviceIdentity)
-	if err != nil {
-		cli.sendPairError(ctx, reqID, 500, "internal-error")
-		return &PairProtoError{"failed to parse signed device identity in pair success message", err}
-	}
-
-	var deviceIdentityDetails waAdv.ADVDeviceIdentity
-	err = proto.Unmarshal(deviceIdentity.Details, &deviceIdentityDetails)
-	if err != nil {
-		cli.sendPairError(ctx, reqID, 500, "internal-error")
-		return &PairProtoError{"failed to parse device identity details in pair success message", err}
-	}
-
-	if !verifyAccountSignature(&deviceIdentity, cli.Store.IdentityKey, deviceIdentityDetails.GetDeviceType() == waAdv.ADVEncryptionType_HOSTED) {
-		cli.sendPairError(ctx, reqID, 401, "signature-mismatch")
-		return ErrPairInvalidDeviceSignature
+		return err
 	}
 
 	if cli.RelaySignCallback != nil {
@@ -191,7 +158,7 @@ func (cli *Client) handlePair(ctx context.Context, deviceIdentityBytes []byte, r
 		}
 		deviceIdentity.DeviceSignature = signature[:]
 	} else {
-		deviceIdentity.DeviceSignature = generateDeviceSignature(&deviceIdentity, cli.Store.IdentityKey)[:]
+		deviceIdentity.DeviceSignature = generateDeviceSignature(deviceIdentity, cli.Store.IdentityKey)[:]
 	}
 
 	if cli.PrePairCallback != nil && !cli.PrePairCallback(jid, platform, businessName) {
@@ -199,14 +166,14 @@ func (cli *Client) handlePair(ctx context.Context, deviceIdentityBytes []byte, r
 		return ErrPairRejectedLocally
 	}
 
-	cli.Store.Account = proto.Clone(&deviceIdentity).(*waAdv.ADVSignedDeviceIdentity)
+	cli.Store.Account = proto.Clone(deviceIdentity).(*waAdv.ADVSignedDeviceIdentity)
 
 	mainDeviceLID := lid
 	mainDeviceLID.Device = 0
 	mainDeviceIdentity := *(*[32]byte)(deviceIdentity.AccountSignatureKey)
 	deviceIdentity.AccountSignatureKey = nil
 
-	selfSignedDeviceIdentity, err := proto.Marshal(&deviceIdentity)
+	selfSignedDeviceIdentity, err := proto.Marshal(deviceIdentity)
 	if err != nil {
 		cli.sendPairError(ctx, reqID, 500, "internal-error")
 		return &PairProtoError{"failed to marshal self-signed device identity", err}
@@ -263,6 +230,11 @@ func (cli *Client) handleRelayPair(ctx context.Context, deviceIdentityBytes []by
 		return ErrPairRejectedLocally
 	}
 
+	originalIdentity, originalDetails, err := cli.parseAndValidatePairSuccess(ctx, deviceIdentityBytes, reqID)
+	if err != nil {
+		return err
+	}
+
 	resp, err := cli.RelayPairSuccessCallback(ctx, &RelayPairSuccessRequest{
 		RequestID:      reqID,
 		DeviceIdentity: append([]byte(nil), deviceIdentityBytes...),
@@ -276,21 +248,17 @@ func (cli *Client) handleRelayPair(ctx context.Context, deviceIdentityBytes []by
 		return &PairProtoError{"failed to validate pair success using relay callback", err}
 	}
 
-	var account waAdv.ADVSignedDeviceIdentity
-	if err = proto.Unmarshal(resp.Account, &account); err != nil {
+	account, err := cli.validateRelayPairSuccessResponse(resp, originalIdentity, originalDetails)
+	if err != nil {
 		cli.sendPairError(ctx, reqID, 500, "internal-error")
-		return &PairProtoError{"failed to parse relay account identity", err}
-	}
-	if len(account.GetAccountSignatureKey()) != 32 {
-		cli.sendPairError(ctx, reqID, 500, "internal-error")
-		return &PairProtoError{"relay account identity missing account signature key", ErrPairInvalidDeviceSignature}
+		return &PairProtoError{"relay pair success response failed server-side validation", err}
 	}
 
 	cli.Store.ID = &jid
 	cli.Store.LID = lid
 	cli.Store.BusinessName = businessName
 	cli.Store.Platform = platform
-	cli.Store.Account = nil
+	cli.Store.Account = proto.Clone(account).(*waAdv.ADVSignedDeviceIdentity)
 	cli.Store.AdvSecretKey = nil
 	err = cli.Store.Save(ctx)
 	if err != nil {
@@ -324,6 +292,99 @@ func (cli *Client) handleRelayPair(ctx context.Context, deviceIdentityBytes []by
 		return fmt.Errorf("failed to send pairing confirmation: %w", err)
 	}
 	return nil
+}
+
+func (cli *Client) parseAndValidatePairSuccess(ctx context.Context, deviceIdentityBytes []byte, reqID string) (*waAdv.ADVSignedDeviceIdentity, *waAdv.ADVDeviceIdentity, error) {
+	var deviceIdentityContainer waAdv.ADVSignedDeviceIdentityHMAC
+	err := proto.Unmarshal(deviceIdentityBytes, &deviceIdentityContainer)
+	if err != nil {
+		cli.sendPairError(ctx, reqID, 500, "internal-error")
+		return nil, nil, &PairProtoError{"failed to parse device identity container in pair success message", err}
+	}
+
+	h := hmac.New(sha256.New, cli.Store.AdvSecretKey)
+	if deviceIdentityContainer.GetAccountType() == waAdv.ADVEncryptionType_HOSTED {
+		h.Write(AdvHostedAccountSignaturePrefix)
+	}
+	h.Write(deviceIdentityContainer.Details)
+
+	if !bytes.Equal(h.Sum(nil), deviceIdentityContainer.HMAC) {
+		cli.Log.Warnf("Invalid HMAC from pair success message")
+		cli.sendPairError(ctx, reqID, 401, "hmac-mismatch")
+		return nil, nil, ErrPairInvalidDeviceIdentityHMAC
+	}
+
+	var deviceIdentity waAdv.ADVSignedDeviceIdentity
+	err = proto.Unmarshal(deviceIdentityContainer.Details, &deviceIdentity)
+	if err != nil {
+		cli.sendPairError(ctx, reqID, 500, "internal-error")
+		return nil, nil, &PairProtoError{"failed to parse signed device identity in pair success message", err}
+	}
+
+	var deviceIdentityDetails waAdv.ADVDeviceIdentity
+	err = proto.Unmarshal(deviceIdentity.Details, &deviceIdentityDetails)
+	if err != nil {
+		cli.sendPairError(ctx, reqID, 500, "internal-error")
+		return nil, nil, &PairProtoError{"failed to parse device identity details in pair success message", err}
+	}
+
+	if !verifyAccountSignature(&deviceIdentity, cli.Store.IdentityKey, deviceIdentityDetails.GetDeviceType() == waAdv.ADVEncryptionType_HOSTED) {
+		cli.sendPairError(ctx, reqID, 401, "signature-mismatch")
+		return nil, nil, ErrPairInvalidDeviceSignature
+	}
+
+	return &deviceIdentity, &deviceIdentityDetails, nil
+}
+
+func (cli *Client) validateRelayPairSuccessResponse(resp *RelayPairSuccessResponse, originalIdentity *waAdv.ADVSignedDeviceIdentity, originalDetails *waAdv.ADVDeviceIdentity) (*waAdv.ADVSignedDeviceIdentity, error) {
+	if resp == nil {
+		return nil, errors.New("missing relay pair success response")
+	}
+	if resp.KeyIndex != originalDetails.GetKeyIndex() {
+		return nil, fmt.Errorf("relay pair success key index mismatch: got %d want %d", resp.KeyIndex, originalDetails.GetKeyIndex())
+	}
+
+	var account waAdv.ADVSignedDeviceIdentity
+	if err := proto.Unmarshal(resp.Account, &account); err != nil {
+		return nil, &PairProtoError{"failed to parse relay account identity", err}
+	}
+	if len(account.GetAccountSignatureKey()) != 32 {
+		return nil, &PairProtoError{"relay account identity missing account signature key", ErrPairInvalidDeviceSignature}
+	}
+	if !bytes.Equal(account.GetDetails(), originalIdentity.GetDetails()) {
+		return nil, errors.New("relay account identity details did not match pair-success payload")
+	}
+	if !bytes.Equal(account.GetAccountSignatureKey(), originalIdentity.GetAccountSignatureKey()) {
+		return nil, errors.New("relay account identity signature key did not match pair-success payload")
+	}
+	if !bytes.Equal(account.GetAccountSignature(), originalIdentity.GetAccountSignature()) {
+		return nil, errors.New("relay account identity signature did not match pair-success payload")
+	}
+	if !verifyDeviceSignatureWithAccountKey(&account, cli.Store.IdentityKey, originalIdentity.GetAccountSignatureKey()) {
+		return nil, errors.New("relay account identity device signature did not verify")
+	}
+
+	var selfSigned waAdv.ADVSignedDeviceIdentity
+	if err := proto.Unmarshal(resp.DeviceIdentity, &selfSigned); err != nil {
+		return nil, &PairProtoError{"failed to parse relay self-signed device identity", err}
+	}
+	if len(selfSigned.GetAccountSignatureKey()) != 0 {
+		return nil, errors.New("relay self-signed device identity unexpectedly contained account signature key")
+	}
+	if !bytes.Equal(selfSigned.GetDetails(), originalIdentity.GetDetails()) {
+		return nil, errors.New("relay self-signed device identity details did not match pair-success payload")
+	}
+	if !bytes.Equal(selfSigned.GetAccountSignature(), originalIdentity.GetAccountSignature()) {
+		return nil, errors.New("relay self-signed device identity account signature did not match pair-success payload")
+	}
+	if !bytes.Equal(selfSigned.GetDeviceSignature(), account.GetDeviceSignature()) {
+		return nil, errors.New("relay self-signed device signature did not match persisted account identity")
+	}
+	if !verifyDeviceSignatureWithAccountKey(&selfSigned, cli.Store.IdentityKey, originalIdentity.GetAccountSignatureKey()) {
+		return nil, errors.New("relay self-signed device identity device signature did not verify")
+	}
+
+	return &account, nil
 }
 
 func concatBytes(data ...[]byte) []byte {
@@ -361,6 +422,18 @@ func generateDeviceSignature(deviceIdentity *waAdv.ADVSignedDeviceIdentity, ikp 
 	message := concatBytes(prefix, deviceIdentity.Details, ikp.Pub[:], deviceIdentity.AccountSignatureKey)
 	sig := ecc.CalculateSignature(ecc.NewDjbECPrivateKey(*ikp.Priv), message)
 	return &sig
+}
+
+func verifyDeviceSignatureWithAccountKey(deviceIdentity *waAdv.ADVSignedDeviceIdentity, ikp *keys.KeyPair, accountSignatureKey []byte) bool {
+	if len(deviceIdentity.DeviceSignature) != 64 || len(accountSignatureKey) != 32 {
+		return false
+	}
+
+	signatureKey := ecc.NewDjbECPublicKey(*ikp.Pub)
+	signature := *(*[64]byte)(deviceIdentity.DeviceSignature)
+	message := concatBytes(AdvDeviceSignaturePrefix, deviceIdentity.Details, ikp.Pub[:], accountSignatureKey)
+
+	return ecc.VerifySignature(signatureKey, message, signature)
 }
 
 func (cli *Client) sendPairError(ctx context.Context, id string, code int, text string) {
