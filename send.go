@@ -568,11 +568,12 @@ func (cli *Client) BuildHistorySyncRequest(lastKnownMessageInfo *types.MessageIn
 			PeerDataOperationRequestMessage: &waE2E.PeerDataOperationRequestMessage{
 				PeerDataOperationRequestType: waE2E.PeerDataOperationRequestType_HISTORY_SYNC_ON_DEMAND.Enum(),
 				HistorySyncOnDemandRequest: &waE2E.PeerDataOperationRequestMessage_HistorySyncOnDemandRequest{
-					ChatJID:              proto.String(lastKnownMessageInfo.Chat.String()),
-					OldestMsgID:          proto.String(lastKnownMessageInfo.ID),
-					OldestMsgFromMe:      proto.Bool(lastKnownMessageInfo.IsFromMe),
-					OnDemandMsgCount:     proto.Int32(int32(count)),
-					OldestMsgTimestampMS: proto.Int64(lastKnownMessageInfo.Timestamp.UnixMilli()),
+					ChatJID:          proto.String(lastKnownMessageInfo.Chat.String()),
+					OldestMsgID:      proto.String(lastKnownMessageInfo.ID),
+					OldestMsgFromMe:  proto.Bool(lastKnownMessageInfo.IsFromMe),
+					OnDemandMsgCount: proto.Int32(int32(count)),
+					// Despite the field name saying "MS", WhatsApp expects seconds here.
+					OldestMsgTimestampMS: proto.Int64(lastKnownMessageInfo.Timestamp.Unix()),
 				},
 			},
 		},
@@ -1042,15 +1043,7 @@ func (cli *Client) preparePeerMessageNode(
 	message *waE2E.Message,
 	timings *MessageDebugTimings,
 ) (*waBinary.Node, error) {
-	attrs := waBinary.Attrs{
-		"id":       id,
-		"type":     "text",
-		"category": "peer",
-		"to":       to,
-	}
-	if message.GetProtocolMessage().GetType() == waE2E.ProtocolMessage_APP_STATE_SYNC_KEY_REQUEST {
-		attrs["push_priority"] = "high"
-	}
+	attrs := peerMessageAttrs(to, id, message)
 	start := time.Now()
 	plaintext, err := proto.Marshal(message)
 	timings.Marshal = time.Since(start)
@@ -1085,6 +1078,22 @@ func (cli *Client) preparePeerMessageNode(
 		Attrs:   attrs,
 		Content: content,
 	}, nil
+}
+
+func peerMessageAttrs(to types.JID, id types.MessageID, message *waE2E.Message) waBinary.Attrs {
+	attrs := waBinary.Attrs{
+		"id":       id,
+		"type":     "text",
+		"category": "peer",
+		"to":       to,
+	}
+	protoMsg := message.GetProtocolMessage()
+	if protoMsg.GetType() == waE2E.ProtocolMessage_APP_STATE_SYNC_KEY_REQUEST {
+		attrs["push_priority"] = "high"
+	} else if protoMsg.GetPeerDataOperationRequestMessage().GetPeerDataOperationRequestType() == waE2E.PeerDataOperationRequestType_HISTORY_SYNC_ON_DEMAND {
+		attrs["privacy_sensitive"] = "1"
+	}
+	return attrs
 }
 
 func (cli *Client) getMessageContent(

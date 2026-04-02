@@ -499,5 +499,10 @@ func (cli *Client) handleNotification(ctx context.Context, node *waBinary.Node) 
 }
 
 func allowRelayTransportNotificationFallback(notifType string) bool {
-	return false
+	switch notifType {
+	case "disappearing_mode":
+		return true
+	default:
+		return false
+	}
 }

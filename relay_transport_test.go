@@ -64,3 +64,12 @@ func TestValidateRelayTransportConfigurationAllowsLinkedReconnectWithoutBootstra
 		t.Fatalf("expected linked transport-only reconnect without stored bootstrap keys to validate, got %v", err)
 	}
 }
+
+func TestAllowRelayTransportNotificationFallback(t *testing.T) {
+	if !allowRelayTransportNotificationFallback("disappearing_mode") {
+		t.Fatalf("expected disappearing_mode notifications to allow safe relay fallback")
+	}
+	if allowRelayTransportNotificationFallback("devices") {
+		t.Fatalf("did not expect devices notifications to allow relay fallback")
+	}
+}
