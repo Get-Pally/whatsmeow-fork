@@ -260,6 +260,15 @@ func (cli *Client) handleRelayPair(ctx context.Context, deviceIdentityBytes []by
 	cli.Store.Platform = platform
 	cli.Store.Account = proto.Clone(account).(*waAdv.ADVSignedDeviceIdentity)
 	cli.Store.AdvSecretKey = nil
+	// Re-apply external relay keys before saving so the app's identity key
+	// and registration ID are persisted for this new device JID. Without this,
+	// the fork's own generated identity key would be saved, causing prekey
+	// uploads to fail with 406 after a 515 reconnect.
+	if cli.RelayKeyApplyCallback != nil {
+		if err := cli.RelayKeyApplyCallback(cli.Store); err != nil {
+			cli.Log.Warnf("Failed to re-apply relay keys before pair save: %v", err)
+		}
+	}
 	err = cli.Store.Save(ctx)
 	if err != nil {
 		cli.sendPairError(ctx, reqID, 500, "internal-error")
