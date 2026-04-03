@@ -132,11 +132,11 @@ var DeviceProps = &waCompanionReg.DeviceProps{
 		Tertiary:  proto.Uint32(0),
 	},
 	HistorySyncConfig: &waCompanionReg.DeviceProps_HistorySyncConfig{
-		FullSyncDaysLimit:                        nil,
-		FullSyncSizeMbLimit:                      nil,
+		FullSyncDaysLimit:                        proto.Uint32(365),
+		FullSyncSizeMbLimit:                      proto.Uint32(512),
 		StorageQuotaMb:                           proto.Uint32(10240),
 		InlineInitialPayloadInE2EeMsg:            proto.Bool(true),
-		RecentSyncDaysLimit:                      nil,
+		RecentSyncDaysLimit:                      proto.Uint32(365),
 		SupportCallLogHistory:                    proto.Bool(false),
 		SupportBotUserAgentChatHistory:           proto.Bool(true),
 		SupportCagReactionsAndPolls:              proto.Bool(true),
@@ -153,7 +153,7 @@ var DeviceProps = &waCompanionReg.DeviceProps{
 		ThumbnailSyncDaysLimit:                   proto.Uint32(60),
 	},
 	PlatformType:    waCompanionReg.DeviceProps_UNKNOWN.Enum(),
-	RequireFullSync: proto.Bool(false),
+	RequireFullSync: proto.Bool(true),
 }
 
 func SetOSInfo(name string, version [3]uint32) {

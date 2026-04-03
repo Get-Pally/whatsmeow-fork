@@ -751,6 +751,7 @@ func (cli *Client) DownloadHistorySync(ctx context.Context, notif *waE2E.History
 		if historySync.GetSyncType() == waHistorySync.HistorySync_PUSH_NAME {
 			cli.handleHistoricalPushNames(ctx, historySync.GetPushnames())
 		} else if len(historySync.GetConversations()) > 0 {
+			cli.storeHistoricalConversationMetadata(ctx, historySync.GetConversations())
 			cli.storeHistoricalMessageSecrets(ctx, historySync.GetConversations())
 		}
 		if len(historySync.GetPhoneNumberToLidMappings()) > 0 {

@@ -168,6 +168,8 @@ Current app startup behavior in `RelayWhatsAppService.run()` is:
 7. `syncConversations()`
 8. `sendPendingMessages()`
 
+With the newer history-first relay bootstrap, steps 6 and 7 are only correct after the first durable history import for the startup inbox. If they run before the first history batch lands, 1:1 conversations introduced by history sync will still be missing their PN/LID/name metadata.
+
 Current app queue behavior in `WhatsAppE2EEManager` is:
 
 1. process pending transport events
@@ -887,12 +889,16 @@ The right fix is better client durability and a clearer relay state machine.
 
 ## Bottom Line
 
-The current relay startup path is logically correct in ordering:
+The current relay startup path is logically correct in transport ordering:
 
 - `hello` and `poll` are working
 - peer messages are prioritized correctly
 - history sync is arriving on the right channel
 - the backend is staying within the transport-only boundary
+
+The UI-facing reconciliation order still needs one refinement:
+
+- `syncContacts()` / `syncConversations()` should happen after the first durable history bootstrap import, or be re-run immediately after it, so 1:1 conversations created by history sync have names and PN/LID mappings available.
 
 But it is not yet safe for full backfill because the app acknowledges processing before durable app import.
 

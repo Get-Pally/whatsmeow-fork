@@ -13,6 +13,7 @@ import (
 
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 // RelayEncryptionType represents the type of Signal Protocol encryption used.
@@ -40,8 +41,13 @@ type RelayMessageOptions struct {
 	// EncryptionType specifies the Signal Protocol message type for legacy single-device sends.
 	EncryptionType RelayEncryptionType
 
+	// Metadata contains the canonical WhatsApp outer-node metadata derived from the original protobuf.
+	Metadata MessageNodeMetadata
+
 	// MessageType is the WhatsApp message type attribute (e.g. "text", "media").
 	// Defaults to "text" if empty.
+	//
+	// Deprecated: prefer Metadata, built with BuildMessageNodeMetadata.
 	MessageType string
 
 	// Timestamp is when the message was created. Defaults to now if zero.
@@ -51,6 +57,8 @@ type RelayMessageOptions struct {
 	MessageID types.MessageID
 
 	// MediaType is optional media type for media messages (e.g. "image", "video").
+	//
+	// Deprecated: prefer Metadata, built with BuildMessageNodeMetadata.
 	MediaType string
 
 	// IncludeDeviceIdentity includes device identity node for pre-key messages.
@@ -63,6 +71,7 @@ type RelayMessageOptions struct {
 // RelayRetryMessageOptions configures a retry replay message.
 type RelayRetryMessageOptions struct {
 	EncryptionType        RelayEncryptionType
+	Metadata              MessageNodeMetadata
 	MessageType           string
 	MessageID             types.MessageID
 	Timestamp             time.Time
@@ -165,8 +174,8 @@ func (cli *Client) SendRelayMultiDeviceMessage(
 		return nil, fmt.Errorf("at least one relay participant is required")
 	}
 
-	msgID, ts, msgType := cli.normalizeRelayMessageOptions(&opts)
-	node, err := cli.buildRelayMessageNode(to, participants, opts, msgID, msgType)
+	msgID, ts, metadata := cli.normalizeRelayMessageOptions(&opts)
+	node, err := cli.buildRelayMessageNode(to, participants, opts, msgID, metadata)
 	if err != nil {
 		return nil, err
 	}
@@ -212,8 +221,8 @@ func (cli *Client) SendRelayMultiDeviceGroupMessage(
 	}
 	opts.EncryptionType = RelayEncryptionSenderKey
 
-	msgID, ts, msgType := cli.normalizeRelayMessageOptions(&opts)
-	node, err := cli.buildRelayGroupMessageNode(groupJID, participants, senderKeyPayload, opts, msgID, msgType, phash)
+	msgID, ts, metadata := cli.normalizeRelayMessageOptions(&opts)
+	node, err := cli.buildRelayGroupMessageNode(groupJID, participants, senderKeyPayload, opts, msgID, metadata, phash)
 	if err != nil {
 		return nil, err
 	}
@@ -248,15 +257,12 @@ func (cli *Client) SendRelayRetryMessage(
 		return nil, fmt.Errorf("retry count must be greater than zero")
 	}
 
-	msgType := opts.MessageType
-	if msgType == "" {
-		msgType = "text"
-	}
 	ts := opts.Timestamp
 	if ts.IsZero() {
 		ts = time.Now()
 	}
-	node := cli.buildRelayRetryMessageNode(to, preEncryptedPayload, opts, msgType, ts)
+	metadata := normalizeRelayRetryMetadata(opts)
+	node := cli.buildRelayRetryMessageNode(to, preEncryptedPayload, opts, metadata, ts)
 	resp, err := cli.sendRelayNodeAndWait(ctx, opts.MessageID, ts, node)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send relay retry message: %w", err)
@@ -264,7 +270,7 @@ func (cli *Client) SendRelayRetryMessage(
 	return resp, nil
 }
 
-func (cli *Client) normalizeRelayMessageOptions(opts *RelayMessageOptions) (types.MessageID, time.Time, string) {
+func (cli *Client) normalizeRelayMessageOptions(opts *RelayMessageOptions) (types.MessageID, time.Time, MessageNodeMetadata) {
 	msgID := opts.MessageID
 	if msgID == "" {
 		msgID = cli.GenerateMessageID()
@@ -273,11 +279,34 @@ func (cli *Client) normalizeRelayMessageOptions(opts *RelayMessageOptions) (type
 	if ts.IsZero() {
 		ts = time.Now()
 	}
-	msgType := opts.MessageType
-	if msgType == "" {
-		msgType = "text"
+	metadata := opts.Metadata
+	if metadata.Type == "" {
+		metadata.Type = opts.MessageType
 	}
-	return msgID, ts, msgType
+	if metadata.MediaType == "" {
+		metadata.MediaType = opts.MediaType
+	}
+	if metadata.Type == "" {
+		metadata.Type = "text"
+	}
+	return msgID, ts, metadata
+}
+
+func normalizeRelayRetryMetadata(opts RelayRetryMessageOptions) MessageNodeMetadata {
+	metadata := opts.Metadata
+	if metadata.Type == "" {
+		metadata.Type = opts.MessageType
+	}
+	if metadata.MediaType == "" {
+		metadata.MediaType = opts.MediaType
+	}
+	if metadata.Edit == "" && opts.Edit != "" {
+		metadata.Edit = types.EditAttribute(opts.Edit)
+	}
+	if metadata.Type == "" {
+		metadata.Type = "text"
+	}
+	return metadata
 }
 
 func validateRelayEncryptionType(encType RelayEncryptionType) error {
@@ -312,25 +341,24 @@ func (cli *Client) buildRelayMessageNode(
 	participants []RelayParticipantMessage,
 	opts RelayMessageOptions,
 	msgID types.MessageID,
-	msgType string,
+	metadata MessageNodeMetadata,
 ) (*waBinary.Node, error) {
 	if err := validateRelayParticipants(participants); err != nil {
 		return nil, err
 	}
-	participantNode, includeIdentity := cli.buildRelayParticipantsNode(participants)
+	participantNode, includeIdentity := cli.buildRelayParticipantsNode(participants, metadata.MediaType, metadata.DecryptFail)
 	content := []waBinary.Node{participantNode}
 	if opts.IncludeDeviceIdentity || includeIdentity {
 		content = append(content, cli.makeDeviceIdentityNode())
 	}
-	content = append(content, opts.AdditionalNodes...)
+	content = appendMessageMetadataNodes(content, metadata, opts.AdditionalNodes)
 
 	return &waBinary.Node{
 		Tag: "message",
-		Attrs: waBinary.Attrs{
-			"id":   msgID,
-			"type": msgType,
-			"to":   to,
-		},
+		Attrs: applyMessageNodeMetadata(waBinary.Attrs{
+			"id": msgID,
+			"to": to,
+		}, metadata),
 		Content: content,
 	}, nil
 }
@@ -342,7 +370,7 @@ func (cli *Client) buildRelayGroupMessageNode(
 	senderKeyPayload []byte,
 	opts RelayMessageOptions,
 	msgID types.MessageID,
-	msgType string,
+	metadata MessageNodeMetadata,
 	phash string,
 ) (*waBinary.Node, error) {
 	content := make([]waBinary.Node, 0, 2+len(opts.AdditionalNodes))
@@ -351,25 +379,24 @@ func (cli *Client) buildRelayGroupMessageNode(
 		if err := validateRelayParticipants(participants); err != nil {
 			return nil, err
 		}
-		participantNode, participantIdentity := cli.buildRelayParticipantsNode(participants)
+		participantNode, participantIdentity := cli.buildRelayParticipantsNode(participants, "", metadata.DecryptFail)
 		content = append(content, participantNode)
 		includeIdentity = participantIdentity
 	}
 	if opts.IncludeDeviceIdentity || includeIdentity {
 		content = append(content, cli.makeDeviceIdentityNode())
 	}
+	content = appendMessageMetadataNodes(content, metadata, opts.AdditionalNodes)
 	content = append(content, waBinary.Node{
 		Tag:     "enc",
-		Attrs:   relayEncAttrs(RelayEncryptionSenderKey, opts.MediaType),
+		Attrs:   relayEncAttrs(RelayEncryptionSenderKey, metadata.MediaType, ""),
 		Content: senderKeyPayload,
 	})
-	content = append(content, opts.AdditionalNodes...)
 
-	attrs := waBinary.Attrs{
-		"id":   msgID,
-		"type": msgType,
-		"to":   groupJID,
-	}
+	attrs := applyMessageNodeMetadata(waBinary.Attrs{
+		"id": msgID,
+		"to": groupJID,
+	}, metadata)
 	if phash != "" {
 		attrs["phash"] = phash
 	}
@@ -384,24 +411,24 @@ func (cli *Client) buildRelayRetryMessageNode(
 	to types.JID,
 	preEncryptedPayload []byte,
 	opts RelayRetryMessageOptions,
-	msgType string,
+	metadata MessageNodeMetadata,
 	ts time.Time,
 ) *waBinary.Node {
 	content := []waBinary.Node{{
 		Tag:     "enc",
-		Attrs:   relayEncAttrs(opts.EncryptionType, opts.MediaType),
+		Attrs:   relayEncAttrs(opts.EncryptionType, metadata.MediaType, metadata.DecryptFail),
 		Content: preEncryptedPayload,
 	}}
 	if opts.IncludeDeviceIdentity || opts.EncryptionType == RelayEncryptionPreKey {
 		content = append(content, cli.makeDeviceIdentityNode())
 	}
+	content = appendMessageMetadataNodes(content, metadata, nil)
 
-	attrs := waBinary.Attrs{
-		"to":   to,
-		"type": msgType,
-		"id":   opts.MessageID,
-		"t":    ts.Unix(),
-	}
+	attrs := applyMessageNodeMetadata(waBinary.Attrs{
+		"to": to,
+		"id": opts.MessageID,
+		"t":  ts.Unix(),
+	}, metadata)
 	if !opts.IsGroup {
 		attrs["device_fanout"] = false
 	}
@@ -410,9 +437,6 @@ func (cli *Client) buildRelayRetryMessageNode(
 	}
 	if !opts.Recipient.IsEmpty() {
 		attrs["recipient"] = opts.Recipient
-	}
-	if opts.Edit != "" {
-		attrs["edit"] = opts.Edit
 	}
 
 	content[0].Attrs["count"] = opts.RetryCount
@@ -423,7 +447,7 @@ func (cli *Client) buildRelayRetryMessageNode(
 	}
 }
 
-func relayEncAttrs(encType RelayEncryptionType, mediaType string) waBinary.Attrs {
+func relayEncAttrs(encType RelayEncryptionType, mediaType string, decryptFail events.DecryptFailMode) waBinary.Attrs {
 	attrs := waBinary.Attrs{
 		"v":    "2",
 		"type": string(encType),
@@ -431,16 +455,23 @@ func relayEncAttrs(encType RelayEncryptionType, mediaType string) waBinary.Attrs
 	if mediaType != "" {
 		attrs["mediatype"] = mediaType
 	}
+	if decryptFail != "" {
+		attrs["decrypt-fail"] = string(decryptFail)
+	}
 	return attrs
 }
 
-func (cli *Client) buildRelayParticipantsNode(participants []RelayParticipantMessage) (waBinary.Node, bool) {
+func (cli *Client) buildRelayParticipantsNode(participants []RelayParticipantMessage, defaultMediaType string, decryptFail events.DecryptFailMode) (waBinary.Node, bool) {
 	nodes := make([]waBinary.Node, 0, len(participants))
 	includeIdentity := false
 	for _, participant := range participants {
+		mediaType := participant.MediaType
+		if mediaType == "" {
+			mediaType = defaultMediaType
+		}
 		encNode := waBinary.Node{
 			Tag:     "enc",
-			Attrs:   relayEncAttrs(participant.EncryptionType, participant.MediaType),
+			Attrs:   relayEncAttrs(participant.EncryptionType, mediaType, decryptFail),
 			Content: participant.Payload,
 		}
 		nodes = append(nodes, waBinary.Node{

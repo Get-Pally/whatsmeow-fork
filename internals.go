@@ -359,6 +359,10 @@ func (int *DangerousInternalClient) StoreHistoricalMessageSecrets(ctx context.Co
 	int.c.storeHistoricalMessageSecrets(ctx, conversations)
 }
 
+func (int *DangerousInternalClient) StoreHistoricalConversationMetadata(ctx context.Context, conversations []*waHistorySync.Conversation) {
+	int.c.storeHistoricalConversationMetadata(ctx, conversations)
+}
+
 func (int *DangerousInternalClient) StoreLIDSyncMessage(ctx context.Context, msg []byte) {
 	int.c.storeLIDSyncMessage(ctx, msg)
 }
@@ -667,8 +671,8 @@ func (int *DangerousInternalClient) PreparePeerMessageNode(ctx context.Context, 
 	return int.c.preparePeerMessageNode(ctx, to, id, message, timings)
 }
 
-func (int *DangerousInternalClient) GetMessageContent(baseNode waBinary.Node, message *waE2E.Message, msgAttrs waBinary.Attrs, includeIdentity bool, extraParams nodeExtraParams) []waBinary.Node {
-	return int.c.getMessageContent(baseNode, message, msgAttrs, includeIdentity, extraParams)
+func (int *DangerousInternalClient) GetMessageContent(baseNode waBinary.Node, metadata MessageNodeMetadata, includeIdentity bool, extraParams nodeExtraParams) []waBinary.Node {
+	return int.c.getMessageContent(baseNode, metadata, includeIdentity, extraParams)
 }
 
 func (int *DangerousInternalClient) PrepareMessageNode(ctx context.Context, to types.JID, id types.MessageID, message *waE2E.Message, participants []types.JID, plaintext, dsmPlaintext []byte, timings *MessageDebugTimings, extraParams nodeExtraParams) (*waBinary.Node, []types.JID, error) {

@@ -500,7 +500,10 @@ func (cli *Client) handleNotification(ctx context.Context, node *waBinary.Node) 
 
 func allowRelayTransportNotificationFallback(notifType string) bool {
 	switch notifType {
-	case "disappearing_mode":
+	// These notification types only drive transient event dispatch in upstream whatsmeow.
+	// Allowing fallback here preserves the normal ack behavior in relay mode without
+	// reintroducing local app-state/history ownership.
+	case "disappearing_mode", "mex", "picture", "status":
 		return true
 	default:
 		return false

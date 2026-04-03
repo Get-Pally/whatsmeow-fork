@@ -251,9 +251,14 @@ func (cli *Client) handleRetryReceipt(ctx context.Context, receipt *events.Recei
 	}
 	encAttrs := waBinary.Attrs{}
 	var msgAttrs messageAttrs
+	var metadata MessageNodeMetadata
 	if msg.wa != nil {
-		msgAttrs.MediaType = getMediaTypeFromMessage(msg.wa)
-		msgAttrs.Type = getTypeFromMessage(msg.wa)
+		metadata = BuildMessageNodeMetadata(msg.wa, MessageNodeMetadataOptions{})
+		msgAttrs.MediaType = metadata.MediaType
+		msgAttrs.Type = metadata.Type
+		msgAttrs.Edit = metadata.Edit
+		msgAttrs.DecryptFail = metadata.DecryptFail
+		msgAttrs.PollType = metadata.PollType
 	} else if fbConsumerMsg != nil {
 		msgAttrs = getAttrsFromFBMessage(fbConsumerMsg)
 	} else {
@@ -261,6 +266,9 @@ func (cli *Client) handleRetryReceipt(ctx context.Context, receipt *events.Recei
 	}
 	if msgAttrs.MediaType != "" {
 		encAttrs["mediatype"] = msgAttrs.MediaType
+	}
+	if msgAttrs.DecryptFail != "" {
+		encAttrs["decrypt-fail"] = string(msgAttrs.DecryptFail)
 	}
 	var encrypted *waBinary.Node
 	var includeDeviceIdentity bool
@@ -291,10 +299,14 @@ func (cli *Client) handleRetryReceipt(ctx context.Context, receipt *events.Recei
 	encrypted.Attrs["count"] = retryCount
 
 	attrs := waBinary.Attrs{
-		"to":   node.Attrs["from"],
-		"type": msgAttrs.Type,
-		"id":   messageID,
-		"t":    timestamp.Unix(),
+		"to": node.Attrs["from"],
+		"id": messageID,
+		"t":  timestamp.Unix(),
+	}
+	if msg.wa != nil {
+		attrs = applyMessageNodeMetadata(attrs, metadata)
+	} else {
+		attrs["type"] = msgAttrs.Type
 	}
 	if !receipt.IsGroup {
 		attrs["device_fanout"] = false
@@ -305,13 +317,13 @@ func (cli *Client) handleRetryReceipt(ctx context.Context, receipt *events.Recei
 	if recipient, ok := node.Attrs["recipient"]; ok {
 		attrs["recipient"] = recipient
 	}
-	if edit, ok := node.Attrs["edit"]; ok {
+	if edit, ok := node.Attrs["edit"]; ok && attrs["edit"] == nil {
 		attrs["edit"] = edit
 	}
 	var content []waBinary.Node
 	if msg.wa != nil {
 		content = cli.getMessageContent(
-			*encrypted, msg.wa, attrs, includeDeviceIdentity, nodeExtraParams{},
+			*encrypted, metadata, includeDeviceIdentity, nodeExtraParams{},
 		)
 	} else {
 		content = []waBinary.Node{

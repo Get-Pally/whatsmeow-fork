@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"google.golang.org/protobuf/proto"
 
@@ -642,6 +643,166 @@ func (cli *Client) handleHistoricalPushNames(ctx context.Context, names []*waHis
 		} else if changed {
 			cli.Log.Debugf("Got push name %s for %s in history sync", user.GetPushname(), jid)
 		}
+	}
+}
+
+func normalizeHistorySyncContactJID(rawJID string) (types.JID, error) {
+	jid, err := types.ParseJID(rawJID)
+	if err != nil {
+		return types.EmptyJID, err
+	}
+	jid = jid.ToNonAD()
+	switch jid.Server {
+	case types.LegacyUserServer, types.HostedServer:
+		jid.Server = types.DefaultUserServer
+	case types.HostedLIDServer:
+		jid.Server = types.HiddenUserServer
+	}
+	return jid, nil
+}
+
+func isHistorySyncContactJID(jid types.JID) bool {
+	switch jid.Server {
+	case types.DefaultUserServer, types.HiddenUserServer:
+		return jid.User != ""
+	default:
+		return false
+	}
+}
+
+func appendHistoricalConversationContact(contacts []store.ContactEntry, seen map[types.JID]struct{}, jid types.JID, displayName string) []store.ContactEntry {
+	if !isHistorySyncContactJID(jid) {
+		return contacts
+	}
+	if _, ok := seen[jid]; ok {
+		return contacts
+	}
+	seen[jid] = struct{}{}
+	// History sync only exposes one display label, so reuse it for both name fields.
+	return append(contacts, store.ContactEntry{
+		JID:       jid,
+		FirstName: displayName,
+		FullName:  displayName,
+	})
+}
+
+func appendHistoricalConversationChatTarget(targets []types.JID, seen map[types.JID]struct{}, jid types.JID) []types.JID {
+	if jid.IsEmpty() {
+		return targets
+	}
+	if _, ok := seen[jid]; ok {
+		return targets
+	}
+	seen[jid] = struct{}{}
+	return append(targets, jid)
+}
+
+func (cli *Client) storeHistoricalConversationMetadata(ctx context.Context, conversations []*waHistorySync.Conversation) {
+	if cli.Store.Contacts == nil && cli.Store.LIDs == nil && cli.Store.ChatSettings == nil {
+		return
+	}
+
+	var contactEntries []store.ContactEntry
+	var lidMappings []store.LIDMapping
+	seenContacts := make(map[types.JID]struct{}, len(conversations)*2)
+	seenMappings := make(map[types.JID]types.JID, len(conversations))
+	var archivedCount, pinnedCount, mutedCount int
+
+	for _, conv := range conversations {
+		var pnJID, lidJID, conversationJID types.JID
+		if raw := conv.GetPnJID(); raw != "" {
+			var err error
+			pnJID, err = normalizeHistorySyncContactJID(raw)
+			if err != nil {
+				cli.Log.Warnf("Failed to parse PN JID '%s' in history sync conversation: %v", raw, err)
+			}
+		}
+		if raw := conv.GetLidJID(); raw != "" {
+			var err error
+			lidJID, err = normalizeHistorySyncContactJID(raw)
+			if err != nil {
+				cli.Log.Warnf("Failed to parse LID JID '%s' in history sync conversation: %v", raw, err)
+			}
+		}
+		if raw := conv.GetID(); raw != "" {
+			var err error
+			conversationJID, err = normalizeHistorySyncContactJID(raw)
+			if err != nil {
+				cli.Log.Warnf("Failed to parse conversation ID '%s' in history sync conversation: %v", raw, err)
+			}
+		}
+
+		if cli.Store.LIDs != nil && !pnJID.IsEmpty() && !lidJID.IsEmpty() {
+			if previousPN, ok := seenMappings[lidJID]; !ok || previousPN != pnJID {
+				seenMappings[lidJID] = pnJID
+				lidMappings = append(lidMappings, store.LIDMapping{
+					LID: lidJID,
+					PN:  pnJID,
+				})
+			}
+		}
+
+		if cli.Store.ChatSettings != nil {
+			targetSeen := make(map[types.JID]struct{}, 3)
+			var targets []types.JID
+			targets = appendHistoricalConversationChatTarget(targets, targetSeen, conversationJID)
+			targets = appendHistoricalConversationChatTarget(targets, targetSeen, pnJID)
+			targets = appendHistoricalConversationChatTarget(targets, targetSeen, lidJID)
+			for _, target := range targets {
+				if conv.Archived != nil {
+					if err := cli.Store.ChatSettings.PutArchived(ctx, target, conv.GetArchived()); err != nil {
+						cli.Log.Warnf("Failed to store archived state of %s from history sync: %v", target, err)
+					} else {
+						archivedCount++
+					}
+				}
+				if conv.Pinned != nil {
+					if err := cli.Store.ChatSettings.PutPinned(ctx, target, conv.GetPinned() > 0); err != nil {
+						cli.Log.Warnf("Failed to store pinned state of %s from history sync: %v", target, err)
+					} else {
+						pinnedCount++
+					}
+				}
+				if conv.MuteEndTime != nil {
+					mutedUntil := time.Time{}
+					if ts := conv.GetMuteEndTime(); ts > 0 {
+						// History sync encodes mute deadlines as seconds, unlike app state mute actions which use milliseconds.
+						mutedUntil = time.Unix(int64(ts), 0)
+					}
+					if err := cli.Store.ChatSettings.PutMutedUntil(ctx, target, mutedUntil); err != nil {
+						cli.Log.Warnf("Failed to store mute state of %s from history sync: %v", target, err)
+					} else {
+						mutedCount++
+					}
+				}
+			}
+		}
+
+		displayName := strings.TrimSpace(conv.GetDisplayName())
+		if cli.Store.Contacts == nil || displayName == "" {
+			continue
+		}
+
+		contactEntries = appendHistoricalConversationContact(contactEntries, seenContacts, conversationJID, displayName)
+		contactEntries = appendHistoricalConversationContact(contactEntries, seenContacts, pnJID, displayName)
+		contactEntries = appendHistoricalConversationContact(contactEntries, seenContacts, lidJID, displayName)
+	}
+
+	if cli.Store.LIDs != nil && len(lidMappings) > 0 {
+		err := cli.Store.LIDs.PutManyLIDMappings(ctx, lidMappings)
+		if err != nil {
+			cli.Log.Warnf("Failed to store %d PN-LID mappings from history sync conversations: %v", len(lidMappings), err)
+		}
+	}
+	if cli.Store.Contacts != nil && len(contactEntries) > 0 {
+		cli.Log.Infof("Updating contact store with %d conversation display names from history sync", len(contactEntries))
+		err := cli.Store.Contacts.PutAllContactNames(ctx, contactEntries)
+		if err != nil {
+			cli.Log.Warnf("Failed to store %d contact names from history sync conversations: %v", len(contactEntries), err)
+		}
+	}
+	if cli.Store.ChatSettings != nil && (archivedCount > 0 || pinnedCount > 0 || mutedCount > 0) {
+		cli.Log.Infof("Stored history sync chat settings archived=%d pinned=%d muted=%d", archivedCount, pinnedCount, mutedCount)
 	}
 }
 

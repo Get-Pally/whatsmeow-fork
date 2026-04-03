@@ -6,8 +6,10 @@ import (
 
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/proto/waAdv"
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 func TestBuildRelayMessageNodeIncludesParticipantsAndDeviceIdentity(t *testing.T) {
@@ -28,9 +30,9 @@ func TestBuildRelayMessageNodeIncludesParticipantsAndDeviceIdentity(t *testing.T
 			Payload:        []byte("ciphertext"),
 			MediaType:      "image",
 		}},
-		RelayMessageOptions{},
+		RelayMessageOptions{Metadata: MessageNodeMetadata{Type: "media", MediaType: "image"}},
 		"relay-msg-1",
-		"media",
+		MessageNodeMetadata{Type: "media", MediaType: "image"},
 	)
 	if err != nil {
 		t.Fatalf("buildRelayMessageNode returned error: %v", err)
@@ -105,9 +107,9 @@ func TestBuildRelayGroupMessageNodeIncludesFanoutAndSenderKey(t *testing.T) {
 		groupJID,
 		[]RelayParticipantMessage{participant},
 		[]byte("sender-key-ciphertext"),
-		RelayMessageOptions{MediaType: "video"},
+		RelayMessageOptions{Metadata: MessageNodeMetadata{Type: "media", MediaType: "video"}},
 		"relay-group-1",
-		"media",
+		MessageNodeMetadata{Type: "media", MediaType: "video"},
 		"participant-hash",
 	)
 	if err != nil {
@@ -190,18 +192,16 @@ func TestBuildRelayRetryMessageNodeIncludesRetryAttrs(t *testing.T) {
 		[]byte("retry-ciphertext"),
 		RelayRetryMessageOptions{
 			EncryptionType:        RelayEncryptionPreKey,
-			MessageType:           "media",
 			MessageID:             "retry-msg-1",
 			Timestamp:             time.Unix(1700000000, 0),
 			RetryCount:            3,
-			MediaType:             "image",
+			Metadata:              MessageNodeMetadata{Type: "media", MediaType: "image", Edit: types.EditAttributeSenderRevoke},
 			IncludeDeviceIdentity: true,
 			IsGroup:               false,
 			Participant:           types.NewJID("1234567890", types.GroupServer),
 			Recipient:             types.NewJID("15551230000", types.DefaultUserServer),
-			Edit:                  "7",
 		},
-		"media",
+		MessageNodeMetadata{Type: "media", MediaType: "image", Edit: types.EditAttributeSenderRevoke},
 		time.Unix(1700000000, 0),
 	)
 
@@ -233,5 +233,202 @@ func TestBuildRelayRetryMessageNodeIncludesRetryAttrs(t *testing.T) {
 	}
 	if content[1].Tag != "device-identity" {
 		t.Fatalf("expected device identity child, got %s", content[1].Tag)
+	}
+}
+
+func TestBuildMessageNodeMetadataCoversRelayRelevantMessageTypes(t *testing.T) {
+	appStateSyncReq := &waE2E.Message{
+		ProtocolMessage: &waE2E.ProtocolMessage{
+			Type: waE2E.ProtocolMessage_APP_STATE_SYNC_KEY_REQUEST.Enum(),
+		},
+	}
+	historySyncReq := &waE2E.Message{
+		ProtocolMessage: &waE2E.ProtocolMessage{
+			Type: waE2E.ProtocolMessage_PEER_DATA_OPERATION_REQUEST_MESSAGE.Enum(),
+			PeerDataOperationRequestMessage: &waE2E.PeerDataOperationRequestMessage{
+				PeerDataOperationRequestType: waE2E.PeerDataOperationRequestType_HISTORY_SYNC_ON_DEMAND.Enum(),
+			},
+		},
+	}
+
+	tests := []struct {
+		name         string
+		message      *waE2E.Message
+		opts         MessageNodeMetadataOptions
+		wantType     string
+		wantMedia    string
+		wantPollType string
+		wantButton   string
+		wantDecrypt  events.DecryptFailMode
+		wantExtraKey string
+		wantExtraVal any
+	}{
+		{
+			name:      "location",
+			message:   &waE2E.Message{LocationMessage: &waE2E.LocationMessage{}},
+			wantType:  "media",
+			wantMedia: "location",
+		},
+		{
+			name:         "poll vote",
+			message:      &waE2E.Message{PollUpdateMessage: &waE2E.PollUpdateMessage{}},
+			wantType:     "poll",
+			wantPollType: "vote",
+			wantDecrypt:  events.DecryptFailHide,
+		},
+		{
+			name: "list",
+			message: &waE2E.Message{ListMessage: &waE2E.ListMessage{
+				ListType: waE2E.ListMessage_SINGLE_SELECT.Enum(),
+			}},
+			wantType:   "media",
+			wantMedia:  "list",
+			wantButton: "list",
+		},
+		{
+			name:         "peer app state sync",
+			message:      appStateSyncReq,
+			opts:         MessageNodeMetadataOptions{Peer: true},
+			wantType:     "peer_msg",
+			wantExtraKey: "push_priority",
+			wantExtraVal: "high",
+		},
+		{
+			name:         "peer history sync request",
+			message:      historySyncReq,
+			opts:         MessageNodeMetadataOptions{Peer: true},
+			wantType:     "peer_msg",
+			wantExtraKey: "privacy_sensitive",
+			wantExtraVal: "1",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := BuildMessageNodeMetadata(tc.message, tc.opts)
+			if got.Type != tc.wantType {
+				t.Fatalf("unexpected type: got %q want %q", got.Type, tc.wantType)
+			}
+			if got.MediaType != tc.wantMedia {
+				t.Fatalf("unexpected media type: got %q want %q", got.MediaType, tc.wantMedia)
+			}
+			if got.PollType != tc.wantPollType {
+				t.Fatalf("unexpected poll type: got %q want %q", got.PollType, tc.wantPollType)
+			}
+			if got.ButtonType != tc.wantButton {
+				t.Fatalf("unexpected button type: got %q want %q", got.ButtonType, tc.wantButton)
+			}
+			if got.DecryptFail != tc.wantDecrypt {
+				t.Fatalf("unexpected decrypt-fail: got %q want %q", got.DecryptFail, tc.wantDecrypt)
+			}
+			if tc.wantExtraKey != "" && got.ExtraMessageAttrs[tc.wantExtraKey] != tc.wantExtraVal {
+				t.Fatalf("unexpected extra attr %q: %#v", tc.wantExtraKey, got.ExtraMessageAttrs[tc.wantExtraKey])
+			}
+		})
+	}
+}
+
+func TestBuildRelayMessageNodeAppendsCanonicalPollAndBizNodes(t *testing.T) {
+	cli := &Client{}
+	to := types.NewJID("15551234567", types.DefaultUserServer)
+
+	listMetadata := BuildMessageNodeMetadata(&waE2E.Message{
+		ListMessage: &waE2E.ListMessage{
+			ListType: waE2E.ListMessage_SINGLE_SELECT.Enum(),
+		},
+	}, MessageNodeMetadataOptions{})
+	listNode, err := cli.buildRelayMessageNode(
+		to,
+		[]RelayParticipantMessage{{
+			JID:            types.JID{User: "15551234567", Device: 7, Server: types.DefaultUserServer},
+			EncryptionType: RelayEncryptionNormal,
+			Payload:        []byte("ciphertext"),
+		}},
+		RelayMessageOptions{Metadata: listMetadata},
+		"relay-list-1",
+		listMetadata,
+	)
+	if err != nil {
+		t.Fatalf("buildRelayMessageNode(list) returned error: %v", err)
+	}
+	listContent := listNode.Content.([]waBinary.Node)
+	if len(listContent) != 2 {
+		t.Fatalf("expected participants + biz node, got %d children", len(listContent))
+	}
+	if listContent[1].Tag != "biz" {
+		t.Fatalf("expected biz child, got %s", listContent[1].Tag)
+	}
+	bizChildren := listContent[1].Content.([]waBinary.Node)
+	if bizChildren[0].Tag != "list" {
+		t.Fatalf("expected list biz child, got %s", bizChildren[0].Tag)
+	}
+	if got := bizChildren[0].Attrs["type"]; got != "single_select" {
+		t.Fatalf("unexpected list biz attrs: %#v", bizChildren[0].Attrs)
+	}
+	participantChildren := listContent[0].Content.([]waBinary.Node)
+	listEnc := participantChildren[0].Content.([]waBinary.Node)[0]
+	if got := listEnc.Attrs["mediatype"]; got != "list" {
+		t.Fatalf("unexpected list mediatype: %#v", got)
+	}
+
+	pollMetadata := BuildMessageNodeMetadata(&waE2E.Message{
+		PollUpdateMessage: &waE2E.PollUpdateMessage{},
+	}, MessageNodeMetadataOptions{})
+	pollNode, err := cli.buildRelayMessageNode(
+		to,
+		[]RelayParticipantMessage{{
+			JID:            types.JID{User: "15551234567", Device: 7, Server: types.DefaultUserServer},
+			EncryptionType: RelayEncryptionNormal,
+			Payload:        []byte("poll-ciphertext"),
+		}},
+		RelayMessageOptions{Metadata: pollMetadata},
+		"relay-poll-1",
+		pollMetadata,
+	)
+	if err != nil {
+		t.Fatalf("buildRelayMessageNode(poll) returned error: %v", err)
+	}
+	pollContent := pollNode.Content.([]waBinary.Node)
+	if len(pollContent) != 2 {
+		t.Fatalf("expected participants + poll meta, got %d children", len(pollContent))
+	}
+	if pollContent[1].Tag != "meta" || pollContent[1].Attrs["polltype"] != "vote" {
+		t.Fatalf("unexpected poll meta node: %#v", pollContent[1])
+	}
+	pollParticipants := pollContent[0].Content.([]waBinary.Node)
+	pollEnc := pollParticipants[0].Content.([]waBinary.Node)[0]
+	if got := pollEnc.Attrs["decrypt-fail"]; got != string(events.DecryptFailHide) {
+		t.Fatalf("unexpected poll decrypt-fail attr: %#v", got)
+	}
+}
+
+func TestBuildRelayRetryMessageNodeAppendsCanonicalPollMetadata(t *testing.T) {
+	cli := &Client{}
+	metadata := BuildMessageNodeMetadata(&waE2E.Message{
+		PollUpdateMessage: &waE2E.PollUpdateMessage{},
+	}, MessageNodeMetadataOptions{})
+
+	node := cli.buildRelayRetryMessageNode(
+		types.JID{User: "15551234567", Device: 7, Server: types.DefaultUserServer},
+		[]byte("retry-ciphertext"),
+		RelayRetryMessageOptions{
+			EncryptionType: RelayEncryptionNormal,
+			Metadata:       metadata,
+			MessageID:      "retry-poll-1",
+			RetryCount:     1,
+		},
+		metadata,
+		time.Unix(1700000000, 0),
+	)
+
+	content := node.Content.([]waBinary.Node)
+	if len(content) != 2 {
+		t.Fatalf("expected enc + poll meta, got %d children", len(content))
+	}
+	if content[1].Tag != "meta" || content[1].Attrs["polltype"] != "vote" {
+		t.Fatalf("unexpected retry poll meta node: %#v", content[1])
+	}
+	if got := content[0].Attrs["decrypt-fail"]; got != string(events.DecryptFailHide) {
+		t.Fatalf("unexpected retry decrypt-fail attr: %#v", got)
 	}
 }

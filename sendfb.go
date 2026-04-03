@@ -332,14 +332,6 @@ func (cli *Client) sendDMV3(
 	return data, participantListHashV2(allDevices), nil
 }
 
-type messageAttrs struct {
-	Type        string
-	MediaType   string
-	Edit        types.EditAttribute
-	DecryptFail events.DecryptFailMode
-	PollType    string
-}
-
 func getAttrsFromFBMessage(msg armadillo.MessageApplicationSub) (attrs messageAttrs) {
 	switch typedMsg := msg.(type) {
 	case *waConsumerApplication.ConsumerApplication:
