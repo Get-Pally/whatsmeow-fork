@@ -261,7 +261,7 @@ func NewClient(deviceStore *store.Device, log waLog.Logger) *Client {
 		log = waLog.Noop
 	}
 	var appStateProcessor *appstate.Processor
-	if deviceStore != nil {
+	if deviceStore != nil && !deviceStore.TransportOnly {
 		appStateProcessor = appstate.NewProcessor(deviceStore, log.Sub("AppState"))
 	}
 	uniqueIDPrefix := random.Bytes(2)

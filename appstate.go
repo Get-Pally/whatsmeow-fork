@@ -29,6 +29,9 @@ import (
 // FetchAppState fetches updates to the given type of app state. If fullSync is true, the current
 // cached state will be removed and all app state patches will be re-fetched from the server.
 func (cli *Client) FetchAppState(ctx context.Context, name appstate.WAPatchName, fullSync, onlyIfNotSynced bool) error {
+	if cli.IsRelayTransportMode() {
+		return ErrRelayTransportOwnsAppState
+	}
 	eventsToDispatch, err := cli.fetchAppState(ctx, name, fullSync, onlyIfNotSynced)
 	if err != nil {
 		return err
