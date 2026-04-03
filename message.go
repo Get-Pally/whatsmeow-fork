@@ -773,11 +773,14 @@ func (cli *Client) DownloadHistorySync(ctx context.Context, notif *waE2E.History
 	return &historySync, nil
 }
 
+// HandleAppStateSyncKeyShare processes app state sync keys received from the primary device.
+// In relay mode, the external client decrypts the peer message containing the key share
+// and forwards the keys to this method so the companion can complete the AppState handshake.
+func (cli *Client) HandleAppStateSyncKeyShare(ctx context.Context, keys *waE2E.AppStateSyncKeyShare) {
+	cli.handleAppStateSyncKeyShare(ctx, keys)
+}
+
 func (cli *Client) handleAppStateSyncKeyShare(ctx context.Context, keys *waE2E.AppStateSyncKeyShare) {
-	if cli.IsRelayTransportMode() {
-		cli.Log.Debugf("Skipping app state key share in relay transport mode")
-		return
-	}
 	onlyResyncIfNotSynced := true
 
 	cli.Log.Debugf("Got %d new app state keys", len(keys.GetKeys()))

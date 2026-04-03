@@ -358,8 +358,8 @@ func (c *Container) initializeDevice(device *store.Device) {
 			device.PreKeys = transportOnlyStore
 		}
 		device.Companion.SenderKeys = transportOnlyStore
-		device.Companion.AppStateKeys = transportOnlyStore
-		device.Companion.AppState = transportOnlyStore
+		device.Companion.AppStateKeys = innerStore
+		device.Companion.AppState = innerStore
 		device.Companion.MsgSecrets = transportOnlyStore
 		device.Companion.PrivacyTokens = transportOnlyStore
 		device.EventBuffer = transportOnlyStore

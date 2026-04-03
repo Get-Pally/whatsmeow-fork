@@ -179,8 +179,10 @@ func TestTransportOnlyDeviceRoundTripPersistsADVAccountButNotCompanionBootstrapK
 	if _, ok := loaded.Companion.SenderKeys.(*store.NoopStore); !ok {
 		t.Fatalf("expected transport-only sender-key store to be a noop store, got %T", loaded.Companion.SenderKeys)
 	}
-	if _, ok := loaded.Companion.AppStateKeys.(*store.NoopStore); !ok {
-		t.Fatalf("expected transport-only appstate-key store to be a noop store, got %T", loaded.Companion.AppStateKeys)
+	// AppStateKeys uses a real store in transport-only mode so the companion
+	// can complete the AppState handshake required for on-demand history sync.
+	if _, ok := loaded.Companion.AppStateKeys.(*SQLStore); !ok {
+		t.Fatalf("expected transport-only appstate-key store to be a real store, got %T", loaded.Companion.AppStateKeys)
 	}
 	if _, ok := loaded.Companion.MsgSecrets.(*store.NoopStore); !ok {
 		t.Fatalf("expected transport-only msg-secret store to be a noop store, got %T", loaded.Companion.MsgSecrets)
@@ -213,8 +215,10 @@ func TestTransportOnlyInitializeDevicePreservesExternalPreKeyStore(t *testing.T)
 	if _, ok := device.Companion.Identities.(*store.NoopStore); !ok {
 		t.Fatalf("expected transport-only identity store to be noop after initialization, got %T", device.Companion.Identities)
 	}
-	if _, ok := device.Companion.AppState.(*store.NoopStore); !ok {
-		t.Fatalf("expected transport-only appstate store to be noop after initialization, got %T", device.Companion.AppState)
+	// AppState uses a real store in transport-only mode so the companion
+	// can complete the AppState handshake required for on-demand history sync.
+	if device.Companion.AppState == nil {
+		t.Fatalf("expected transport-only appstate store to be initialized, got nil")
 	}
 }
 
