@@ -50,7 +50,7 @@ type MessageNodeMetadataOptions struct {
 func BuildMessageNodeMetadata(message *waE2E.Message, opts MessageNodeMetadataOptions) MessageNodeMetadata {
 	if message == nil {
 		if opts.Peer {
-			return MessageNodeMetadata{Type: "peer_msg"}
+			return MessageNodeMetadata{Type: "text"}
 		}
 		return MessageNodeMetadata{Type: "text"}
 	}
@@ -67,7 +67,7 @@ func BuildMessageNodeMetadata(message *waE2E.Message, opts MessageNodeMetadataOp
 		ExtraMessageAttrs: cloneAttrs(attrs.ExtraMessageAttrs),
 	}
 	if opts.Peer {
-		metadata.Type = "peer_msg"
+		metadata.Type = "text"
 		metadata.ExtraMessageAttrs = cloneAttrs(peerMessageExtraAttrs(message))
 	}
 	if metadata.Type == "" {

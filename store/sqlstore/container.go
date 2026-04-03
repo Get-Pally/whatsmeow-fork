@@ -226,7 +226,12 @@ const (
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
 			ON CONFLICT (jid) DO UPDATE
 				SET lid=excluded.lid,
+					registration_id=excluded.registration_id,
 					transport_only=excluded.transport_only,
+					identity_key=excluded.identity_key,
+					signed_pre_key=excluded.signed_pre_key,
+					signed_pre_key_id=excluded.signed_pre_key_id,
+					signed_pre_key_sig=excluded.signed_pre_key_sig,
 					platform=excluded.platform,
 					business_name=excluded.business_name,
 					push_name=excluded.push_name,
