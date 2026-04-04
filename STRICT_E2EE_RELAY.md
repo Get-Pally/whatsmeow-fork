@@ -137,14 +137,84 @@ History sync is delegated to the external client:
 
 The app decrypts history sync notifications and blobs locally. The server must not download and decrypt them.
 
+When a peer message from the primary device (device 0) is intercepted by the relay callback, the fork sends both `hist_sync` and `peer_msg` receipts. These tell the primary the companion received the initial sync and is ready for on-demand requests.
+
+### 8. Prekey Lifecycle
+
+Relevant files:
+
+- `prekeys.go`
+- `connectionevents.go`
+- `notification.go`
+- `store/sqlstore/container.go`
+
+The prekey lifecycle is split between the always-on server and the intermittent app:
+
+**App (intermittent, owns Signal private keys):**
+- Generates prekeys (812 on initial link, 100 on replenishment)
+- Sends prekey public material to the backend via bridge upload API
+- Replenishes on: app launch, message send, `prekeys_low` transport event
+
+**Fork/Backend (always on, transport only):**
+- Stores prekeys in RelayPreKeyStore buffer
+- Uploads prekeys to WhatsApp server when:
+  - `handleConnectSuccess` detects server count < 5
+  - `handleEncryptNotification` receives low-prekey signal from server
+  - App triggers upload via bridge API
+- Uses the app's identity key (persisted from pairing) in the upload IQ
+
+The fork never generates prekeys or identity keys. `NewDevice()` only creates a noise key for transport. The identity key, registration ID, and signed prekey come exclusively from the app via `ApplyToDevice`.
+
+The `RelayKeyApplyCallback` re-applies the app's identity key from the external key store right before `Save()` during `handleRelayPair`, ensuring the correct key is persisted to the database and survives 515 reconnects.
+
+### 9. AppState Sync
+
+Relevant files:
+
+- `appstate.go`
+- `notification.go`
+
+AppState (contacts, settings, privacy) is processed on the app side:
+
+- The app fetches raw encrypted patches via the bridge API (`DangerousInternals().FetchAppStatePatches()`)
+- The app decrypts patches using AppState sync keys it owns
+- The app applies mutations locally
+
+The fork does not store AppState keys or decrypt patches. It proxies the IQ requests to WhatsApp. The `handleEncryptNotification` handler is enabled so the fork can respond to prekey-low signals, but AppState notification handling (`handleAppStateNotification`) remains delegated to the relay callback for transport event queuing.
+
+## Uptime and Responsibility Split
+
+The server runs 24/7. The app is intermittent. This drives the split:
+
+| Responsibility | Owner | Why |
+|---|---|---|
+| WhatsApp websocket | Server | Must stay connected |
+| Prekey buffer storage | Server | Must upload when app is offline |
+| Prekey upload to WhatsApp | Server | Server receives low-prekey signals |
+| Prekey generation | App | Owns Signal private keys |
+| Identity key / registration ID | App | Generates once, provides to server |
+| Identity key persistence | Server | Must survive 515 reconnects |
+| Signal message encryption | App | Owns sender keys and sessions |
+| Signal message decryption | App | Owns private keys |
+| History sync blob download | App | Owns decryption keys |
+| AppState patch decryption | App | Owns AppState sync keys |
+| On-demand history requests | App | Constructs and encrypts the request |
+| Protocol receipts (hist_sync, peer_msg) | Server | Must send immediately on message receipt |
+| Transport event queuing | Server | Queues events for app to process later |
+
+When adding new features, ask: "Does this need to work while the app is asleep?" If yes, it belongs on the server. If it requires private key material, it belongs on the app. If both, the server holds a buffer and the app replenishes.
+
 ## Source Map
 
-- `client.go`: relay-mode flags and configuration validation
-- `pair.go`: pair-success validation and external callback handoff
-- `message.go`: message interception, SKDM forwarding, history-sync disablement
-- `notification.go`: notification interception and no-fallback enforcement
+- `client.go`: relay-mode flags, configuration validation, `RelayKeyApplyCallback`
+- `pair.go`: pair-success validation, external callback handoff, identity key persistence
+- `message.go`: message interception, SKDM forwarding, protocol receipts (hist_sync + peer_msg)
+- `notification.go`: encrypt notification handler (prekey replenishment), notification interception
 - `retry.go`: retry-receipt forwarding
-- `send.go`: plaintext send rejection in relay mode
+- `send.go`: plaintext send rejection, `BuildHistorySyncRequest`, `BuildFullHistorySyncRequest`
+- `prekeys.go`: prekey upload with app's identity key, relay store integration
+- `store/sqlstore/container.go`: `NewDevice()` (no identity key generation), `PutDevice` (persists public key)
+- `message_metadata.go`: message node metadata (type="text" for peer messages)
 - `relay_transport_test.go`: relay transport invariant coverage
 - `pair_relay_test.go`: pair-success validation coverage
 
