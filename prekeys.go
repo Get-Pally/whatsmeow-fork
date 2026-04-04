@@ -85,6 +85,9 @@ func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 		return
 	}
 	cli.Log.Infof("Uploading %d new prekeys to server", len(preKeys))
+	if cli.Store.IdentityKey != nil && cli.Store.IdentityKey.Pub != nil {
+		cli.Log.Infof("[PREKEY_UPLOAD_IDENTITY] identity_key=%x registration_id=%d transport_only=%v", cli.Store.IdentityKey.Pub[:8], cli.Store.RegistrationID, cli.Store.TransportOnly)
+	}
 	_, err = cli.sendIQ(ctx, infoQuery{
 		Namespace: "encrypt",
 		Type:      "set",
