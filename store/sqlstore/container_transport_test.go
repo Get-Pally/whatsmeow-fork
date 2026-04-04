@@ -93,13 +93,13 @@ func TestTransportOnlyDeviceRoundTripPersistsADVAccountButNotCompanionBootstrapK
 		WithArgs(
 			jid,
 			lid,
-			uint32(0),
+			device.RegistrationID,
 			true,
 			noiseKey.Priv[:],
-			make([]byte, 32),
-			make([]byte, 32),
-			uint32(0),
-			make([]byte, 64),
+			device.IdentityKey.Pub[:],
+			device.SignedPreKey.Pub[:],
+			device.SignedPreKey.KeyID,
+			device.SignedPreKey.Signature[:],
 			make([]byte, 32),
 			advDetails,
 			advAccountSig,
@@ -125,13 +125,13 @@ func TestTransportOnlyDeviceRoundTripPersistsADVAccountButNotCompanionBootstrapK
 	}).AddRow(
 		jid,
 		lid,
-		0,
+		device.RegistrationID,
 		true,
 		noiseKey.Priv[:],
-		make([]byte, 32),
-		make([]byte, 32),
-		0,
-		make([]byte, 64),
+		device.IdentityKey.Pub[:],
+		device.SignedPreKey.Pub[:],
+		device.SignedPreKey.KeyID,
+		device.SignedPreKey.Signature[:],
 		make([]byte, 32),
 		advDetails,
 		advAccountSig,
@@ -152,14 +152,19 @@ func TestTransportOnlyDeviceRoundTripPersistsADVAccountButNotCompanionBootstrapK
 	if !loaded.TransportOnly {
 		t.Fatal("expected loaded device to remain transport-only")
 	}
-	if loaded.RegistrationID != 0 {
-		t.Fatalf("expected registration id to be scrubbed, got %d", loaded.RegistrationID)
+	if loaded.RegistrationID != device.RegistrationID {
+		t.Fatalf("expected registration id %d, got %d", device.RegistrationID, loaded.RegistrationID)
 	}
-	if loaded.IdentityKey != nil {
-		t.Fatalf("expected transport-only reload to omit companion identity public key, got %#v", loaded.IdentityKey)
+	// Transport-only devices now persist the PUBLIC identity key and signed pre-key
+	// so prekey uploads use the correct identity after 515 reconnects.
+	if loaded.IdentityKey == nil || loaded.IdentityKey.Pub == nil {
+		t.Fatalf("expected transport-only reload to preserve identity public key")
 	}
-	if loaded.SignedPreKey != nil {
-		t.Fatalf("expected transport-only reload to omit companion signed pre-key, got %#v", loaded.SignedPreKey)
+	if loaded.IdentityKey.Priv != nil {
+		t.Fatalf("expected transport-only reload to NOT have identity private key")
+	}
+	if loaded.SignedPreKey == nil || loaded.SignedPreKey.Pub == nil {
+		t.Fatalf("expected transport-only reload to preserve signed pre-key public key")
 	}
 	if loaded.AdvSecretKey != nil {
 		t.Fatalf("expected transport-only reload to omit adv secret, got %x", loaded.AdvSecretKey)

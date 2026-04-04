@@ -289,13 +289,12 @@ func (c *Container) PutDevice(ctx context.Context, device *store.Device) error {
 	if device.ID == nil {
 		return ErrDeviceIDMustBeSet
 	}
-	var registrationID uint32
+	registrationID := device.RegistrationID
 	identityBytes := make([]byte, 32)
 	signedPreKeyBytes := make([]byte, 32)
 	signedPreKeyID := uint32(0)
 	signedPreKeySig := make([]byte, 64)
 	if !device.TransportOnly {
-		registrationID = device.RegistrationID
 		if device.IdentityKey == nil || device.IdentityKey.Priv == nil || device.SignedPreKey == nil || device.SignedPreKey.Priv == nil || device.SignedPreKey.Signature == nil {
 			return fmt.Errorf("full device save requires local identity and signed pre-key private material")
 		}
@@ -303,10 +302,24 @@ func (c *Container) PutDevice(ctx context.Context, device *store.Device) error {
 		signedPreKeyBytes = device.SignedPreKey.Priv[:]
 		signedPreKeyID = device.SignedPreKey.KeyID
 		signedPreKeySig = device.SignedPreKey.Signature[:]
-	} else if device.SignedPreKey != nil && device.SignedPreKey.Signature != nil {
-		// Transport-only devices intentionally do not persist companion Signal bootstrap material.
-		// The live bridge session may still attach public keys in memory when needed.
-		signedPreKeySig = make([]byte, 64)
+	} else {
+		// Transport-only: persist the PUBLIC identity key (not private) so prekey
+		// uploads use the correct identity after 515 reconnects. The relay client
+		// sets IdentityKey.Pub via ApplyToDevice; we store it in the identity_key
+		// column (normally used for the private key) since transport-only devices
+		// don't have private key material.
+		if device.IdentityKey != nil && device.IdentityKey.Pub != nil {
+			identityBytes = device.IdentityKey.Pub[:]
+		}
+		if device.SignedPreKey != nil {
+			if device.SignedPreKey.Pub != nil {
+				signedPreKeyBytes = device.SignedPreKey.Pub[:]
+			}
+			signedPreKeyID = device.SignedPreKey.KeyID
+			if device.SignedPreKey.Signature != nil {
+				signedPreKeySig = device.SignedPreKey.Signature[:]
+			}
+		}
 	}
 	advKey := make([]byte, 32)
 	advDetails := []byte{}
