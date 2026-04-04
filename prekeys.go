@@ -60,6 +60,14 @@ func (cli *Client) getServerPreKeyCount(ctx context.Context) (int, error) {
 }
 
 func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
+	// In relay mode, re-apply the external identity key before uploading so the IQ
+	// uses the app's identity (which was registered during pairing) rather than the
+	// fork's own generated key.
+	if cli.IsRelayTransportMode() && cli.RelayKeyApplyCallback != nil {
+		if err := cli.RelayKeyApplyCallback(cli.Store); err != nil {
+			cli.Log.Warnf("Failed to re-apply relay keys before prekey upload: %v", err)
+		}
+	}
 	cli.uploadPreKeysLock.Lock()
 	defer cli.uploadPreKeysLock.Unlock()
 	if cli.lastPreKeyUpload.Add(10 * time.Minute).After(time.Now()) {
