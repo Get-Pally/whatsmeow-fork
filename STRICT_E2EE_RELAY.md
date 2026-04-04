@@ -151,7 +151,7 @@ Relevant files:
 The prekey lifecycle is split between the always-on server and the intermittent app:
 
 **App (intermittent, owns Signal private keys):**
-- Generates prekeys (812 on initial link, 100 on replenishment)
+- Generates prekeys (200 on initial link + 100 from registration = 300, then 100 per replenishment batch)
 - Sends prekey public material to the backend via bridge upload API
 - Replenishes on: app launch, message send, `prekeys_low` transport event
 
