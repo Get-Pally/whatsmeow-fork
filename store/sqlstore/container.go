@@ -286,6 +286,11 @@ func (c *Container) PutDevice(ctx context.Context, device *store.Device) error {
 	// Persist the public identity key (not private) — the app owns the private key.
 	if device.IdentityKey != nil && device.IdentityKey.Pub != nil {
 		identityBytes = device.IdentityKey.Pub[:]
+		if device.Log != nil {
+			device.Log.Infof("[PUTDEVICE] Saving identity_key=%x reg_id=%d jid=%s", identityBytes[:8], registrationID, device.ID)
+		}
+	} else if device.Log != nil {
+		device.Log.Warnf("[PUTDEVICE] Saving with NIL identity key jid=%s", device.ID)
 	}
 	if device.SignedPreKey != nil {
 		if device.SignedPreKey.Pub != nil {
