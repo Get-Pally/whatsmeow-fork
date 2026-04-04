@@ -23,10 +23,6 @@ import (
 )
 
 func (cli *Client) handleEncryptNotification(ctx context.Context, node *waBinary.Node) {
-	if cli.IsRelayTransportMode() {
-		cli.Log.Debugf("Skipping local encrypt notification handling in relay transport mode")
-		return
-	}
 	from := node.AttrGetter().JID("from")
 	if from == types.ServerJID {
 		count := node.GetChildByTag("count")
