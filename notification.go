@@ -429,6 +429,13 @@ func (cli *Client) handleNotification(ctx context.Context, node *waBinary.Node) 
 			cli.backgroundIfAsyncAck(func() {
 				cli.sendAck(ctx, node, 0)
 			})
+			// Even though the relay callback handled the notification (queuing a
+			// transport event to the app), also let the fork handle encrypt
+			// notifications directly. This uploads any available prekeys from the
+			// relay store immediately instead of waiting for the app round-trip.
+			if notifType := node.AttrGetter().OptionalString("type"); notifType == "encrypt" {
+				go cli.handleEncryptNotification(ctx, node)
+			}
 			return
 		} else if cli.IsRelayTransportMode() {
 			notifType := node.AttrGetter().OptionalString("type")
