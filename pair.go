@@ -265,9 +265,14 @@ func (cli *Client) handleRelayPair(ctx context.Context, deviceIdentityBytes []by
 	// the fork's own generated identity key would be saved, causing prekey
 	// uploads to fail with 406 after a 515 reconnect.
 	if cli.RelayKeyApplyCallback != nil {
+		cli.Log.Infof("[RELAY_KEY_APPLY] Re-applying external keys before pair save for %s", jid)
 		if err := cli.RelayKeyApplyCallback(cli.Store); err != nil {
-			cli.Log.Warnf("Failed to re-apply relay keys before pair save: %v", err)
+			cli.Log.Warnf("[RELAY_KEY_APPLY] Failed to re-apply relay keys before pair save: %v", err)
+		} else if cli.Store.IdentityKey != nil && cli.Store.IdentityKey.Pub != nil {
+			cli.Log.Infof("[RELAY_KEY_APPLY] Identity key after re-apply: %x", cli.Store.IdentityKey.Pub[:8])
 		}
+	} else {
+		cli.Log.Warnf("[RELAY_KEY_APPLY] No RelayKeyApplyCallback set - identity key may be wrong after pair save")
 	}
 	err = cli.Store.Save(ctx)
 	if err != nil {
