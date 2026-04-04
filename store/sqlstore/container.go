@@ -11,11 +11,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	mathRand "math/rand/v2"
 
 	"github.com/google/uuid"
 	"go.mau.fi/util/dbutil"
-	"go.mau.fi/util/random"
 
 	"go.mau.fi/whatsmeow/proto/waAdv"
 	"go.mau.fi/whatsmeow/store"
@@ -242,34 +240,25 @@ const (
 	countDevicesQuery        = `SELECT COUNT(*) FROM whatsmeow_device`
 )
 
-// NewDevice creates a new device in this database.
+// NewDevice creates a new transport-only device for relay mode.
+// Only generates a noise key for the WhatsApp transport layer.
+// The Signal identity key and registration ID come from the app via ApplyToDevice.
 //
 // No data is actually stored before Save is called. However, the pairing process will automatically
 // call Save after a successful pairing, so you most likely don't need to call it yourself.
 func (c *Container) NewDevice() *store.Device {
-	device := &store.Device{
-		Log:       c.log,
-		Container: c,
-
-		NoiseKey:       keys.NewKeyPair(),
-		IdentityKey:    keys.NewKeyPair(),
-		RegistrationID: mathRand.Uint32(),
-		AdvSecretKey:   random.Bytes(32),
-	}
-	device.SignedPreKey = device.IdentityKey.CreateSignedPreKey(1)
-	return device
-}
-
-// NewTransportOnlyDevice creates a transport-only device shell for relay mode.
-// It intentionally omits companion Signal bootstrap material so the backend never
-// generates decrypt-capable identity state for the external client.
-func (c *Container) NewTransportOnlyDevice() *store.Device {
 	return &store.Device{
 		Log:           c.log,
 		Container:     c,
 		NoiseKey:      keys.NewKeyPair(),
 		TransportOnly: true,
 	}
+}
+
+// NewTransportOnlyDevice is an alias for NewDevice. All devices are transport-only
+// in this fork — the app owns Signal identity keys and registration IDs.
+func (c *Container) NewTransportOnlyDevice() *store.Device {
+	return c.NewDevice()
 }
 
 // ErrDeviceIDMustBeSet is the error returned by PutDevice if you try to save a device before knowing its JID.
@@ -294,31 +283,17 @@ func (c *Container) PutDevice(ctx context.Context, device *store.Device) error {
 	signedPreKeyBytes := make([]byte, 32)
 	signedPreKeyID := uint32(0)
 	signedPreKeySig := make([]byte, 64)
-	if !device.TransportOnly {
-		if device.IdentityKey == nil || device.IdentityKey.Priv == nil || device.SignedPreKey == nil || device.SignedPreKey.Priv == nil || device.SignedPreKey.Signature == nil {
-			return fmt.Errorf("full device save requires local identity and signed pre-key private material")
+	// Persist the public identity key (not private) — the app owns the private key.
+	if device.IdentityKey != nil && device.IdentityKey.Pub != nil {
+		identityBytes = device.IdentityKey.Pub[:]
+	}
+	if device.SignedPreKey != nil {
+		if device.SignedPreKey.Pub != nil {
+			signedPreKeyBytes = device.SignedPreKey.Pub[:]
 		}
-		identityBytes = device.IdentityKey.Priv[:]
-		signedPreKeyBytes = device.SignedPreKey.Priv[:]
 		signedPreKeyID = device.SignedPreKey.KeyID
-		signedPreKeySig = device.SignedPreKey.Signature[:]
-	} else {
-		// Transport-only: persist the PUBLIC identity key (not private) so prekey
-		// uploads use the correct identity after 515 reconnects. The relay client
-		// sets IdentityKey.Pub via ApplyToDevice; we store it in the identity_key
-		// column (normally used for the private key) since transport-only devices
-		// don't have private key material.
-		if device.IdentityKey != nil && device.IdentityKey.Pub != nil {
-			identityBytes = device.IdentityKey.Pub[:]
-		}
-		if device.SignedPreKey != nil {
-			if device.SignedPreKey.Pub != nil {
-				signedPreKeyBytes = device.SignedPreKey.Pub[:]
-			}
-			signedPreKeyID = device.SignedPreKey.KeyID
-			if device.SignedPreKey.Signature != nil {
-				signedPreKeySig = device.SignedPreKey.Signature[:]
-			}
+		if device.SignedPreKey.Signature != nil {
+			signedPreKeySig = device.SignedPreKey.Signature[:]
 		}
 	}
 	advKey := make([]byte, 32)
@@ -326,9 +301,6 @@ func (c *Container) PutDevice(ctx context.Context, device *store.Device) error {
 	advAccountSig := make([]byte, 64)
 	advAccountSigKey := make([]byte, 32)
 	advDeviceSig := make([]byte, 64)
-	if !device.TransportOnly && len(device.AdvSecretKey) == 32 {
-		advKey = device.AdvSecretKey
-	}
 	if device.Account != nil {
 		advDetails = device.Account.Details
 		if len(device.Account.AccountSignature) == 64 {
