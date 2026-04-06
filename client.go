@@ -189,6 +189,9 @@ type Client struct {
 	// pair-success. The callback must fully validate the pair-success payload and return the
 	// device identity blobs that the transport layer should persist and echo back to WhatsApp.
 	RelayPairSuccessCallback func(ctx context.Context, request *RelayPairSuccessRequest) (*RelayPairSuccessResponse, error)
+	// RelayPhonePairCallback is called in relay mode during phone-code pairing when the
+	// companion_finish payload must be built with the external identity private key.
+	RelayPhonePairCallback func(ctx context.Context, request *RelayPhonePairRequest) (*RelayPhonePairResponse, error)
 	// RelayKeyApplyCallback is called before saving a newly paired device to re-apply
 	// the external client's identity key and registration ID. Without this, the fork's
 	// own generated identity key would be persisted, causing prekey upload failures.

@@ -250,3 +250,55 @@ func TestNewTransportOnlyDeviceOmitsCompanionBootstrapMaterial(t *testing.T) {
 		t.Fatalf("expected transport-only device to omit adv account, got %#v", device.Account)
 	}
 }
+
+func TestTransportOnlySaveUpdatesPersistedAccountOnExistingRow(t *testing.T) {
+	container := newSQLiteTestContainer(t)
+	ctx := context.Background()
+
+	device, jid, lid := newSavedTestDevice(t, ctx, container, "15551239999")
+	var identityPub [32]byte
+	var signedPreKeyPub [32]byte
+	var signedPreKeySig [64]byte
+	for i := range identityPub {
+		identityPub[i] = byte(0x10 + i)
+		signedPreKeyPub[i] = byte(0x40 + i)
+	}
+	for i := range signedPreKeySig {
+		signedPreKeySig[i] = byte(0x60 + i)
+	}
+
+	device.TransportOnly = true
+	device.ID = &jid
+	device.LID = lid
+	device.RegistrationID = 4242
+	device.IdentityKey = &keys.KeyPair{Pub: &identityPub}
+	device.SignedPreKey = &keys.PreKey{
+		KeyID:     12,
+		KeyPair:   keys.KeyPair{Pub: &signedPreKeyPub},
+		Signature: &signedPreKeySig,
+	}
+	device.Account = &waAdv.ADVSignedDeviceIdentity{
+		Details:             []byte("updated-details"),
+		AccountSignature:    bytesOfLen(64, 0x22),
+		AccountSignatureKey: bytesOfLen(32, 0x33),
+		DeviceSignature:     bytesOfLen(64, 0x44),
+	}
+
+	if err := device.Save(ctx); err != nil {
+		t.Fatalf("failed to update transport-only device: %v", err)
+	}
+
+	loaded, err := container.GetDevice(ctx, jid)
+	if err != nil {
+		t.Fatalf("failed to reload transport-only device: %v", err)
+	}
+	if loaded.Account == nil {
+		t.Fatal("expected persisted account after update")
+	}
+	if got := string(loaded.Account.Details); got != "updated-details" {
+		t.Fatalf("unexpected persisted account details: %q", got)
+	}
+	if got := loaded.RegistrationID; got != 4242 {
+		t.Fatalf("unexpected persisted registration id: got %d want %d", got, 4242)
+	}
+}

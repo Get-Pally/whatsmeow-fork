@@ -41,6 +41,7 @@ var (
 	ErrRelayTransportRequiresPreEncryptedSend     = errors.New("relay transport mode requires pre-encrypted relay send APIs")
 	ErrRelayTransportRequiresTransportOnlyStore   = errors.New("relay transport mode requires a transport-only device store with no private Signal keys")
 	ErrRelayTransportRequiresPairSuccessCallback  = errors.New("relay transport mode requires a pair-success callback during linking")
+	ErrRelayTransportRequiresPhonePairCallback    = errors.New("relay transport mode requires a phone-pair callback during code linking")
 	ErrRelayTransportRequiresMessageCallback      = errors.New("relay transport mode requires an encrypted-message relay callback")
 	ErrRelayTransportRequiresSKDMCallback         = errors.New("relay transport mode requires a sender-key-distribution relay callback")
 	ErrRelayTransportRequiresNotificationCallback = errors.New("relay transport mode requires a transport-notification relay callback")
