@@ -76,24 +76,41 @@ func (cli *Client) handleAppStateNotification(ctx context.Context, node *waBinar
 
 func (cli *Client) handlePictureNotification(ctx context.Context, node *waBinary.Node) {
 	ts := node.AttrGetter().UnixTime("t")
+	parentAG := node.AttrGetter()
+	parentJID := parentAG.OptionalJID("from")
 	for _, child := range node.GetChildren() {
-		ag := child.AttrGetter()
+		childAG := child.AttrGetter()
 		var evt events.Picture
 		evt.Timestamp = ts
-		evt.JID = ag.JID("jid")
-		evt.Author = ag.OptionalJIDOrEmpty("author")
+		if jid := childAG.OptionalJID("jid"); jid != nil {
+			evt.JID = *jid
+		} else if parentJID != nil {
+			evt.JID = *parentJID
+		}
+		evt.Author = childAG.OptionalJIDOrEmpty("author")
 		if child.Tag == "delete" {
 			evt.Remove = true
 		} else if child.Tag == "add" {
-			evt.PictureID = ag.String("id")
+			evt.PictureID = childAG.OptionalString("id")
 		} else if child.Tag == "set" {
-			// TODO sometimes there's a hash and no ID?
-			evt.PictureID = ag.String("id")
+			// Some live picture notifications only include a hash on the child and
+			// the target JID on the parent notification stanza.
+			evt.PictureID = childAG.OptionalString("id")
+			if evt.PictureID == "" {
+				evt.PictureID = childAG.OptionalString("hash")
+			}
 		} else {
 			continue
 		}
-		if !ag.OK() {
-			cli.Log.Debugf("Ignoring picture change notification with unexpected attributes: %v", ag.Error())
+		var unexpected []string
+		if evt.JID.IsEmpty() {
+			unexpected = append(unexpected, "missing picture target JID")
+		}
+		if !evt.Remove && evt.PictureID == "" {
+			unexpected = append(unexpected, "missing picture id/hash")
+		}
+		if len(unexpected) > 0 {
+			cli.Log.Debugf("Ignoring picture change notification with unexpected attributes: %v", unexpected)
 			continue
 		}
 		cli.dispatchEvent(&evt)
