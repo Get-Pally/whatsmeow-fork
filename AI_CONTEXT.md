@@ -21,11 +21,16 @@ This repository is the forked `whatsmeow` transport layer used by Pally's strict
 
 ## Relay-Specific Guidance
 
-- Relay mode must stay transport-only.
-- Do not add server-side plaintext send or decrypt fallbacks in relay mode.
-- Do not persist Signal private identity or signed pre-key material in the relay device store.
+- This fork is always transport-only. There is no "non-relay" mode.
+- Do not add server-side plaintext send or decrypt fallbacks.
+- Do not persist Signal private identity or signed pre-key material in the device store. Only public keys are stored.
+- `NewDevice()` must never generate identity keys or registration IDs — these come from the app via `ApplyToDevice`.
+- The identity key persisted during pairing is the source of truth. Bridge hello must not overwrite it with a different key.
+- Prekey uploads must use the app's identity key (from the store). The fork holds a buffer of app-generated prekeys and uploads on demand.
+- `handleEncryptNotification` must stay enabled — it triggers prekey replenishment from the buffer when the server signals low count.
+- Protocol receipts (`hist_sync` + `peer_msg`) must be sent for peer messages from the primary device.
+- History sync and AppState decryption belong to the app. The fork proxies IQ requests but never decrypts content.
 - Pair-success responses from the app must always be re-validated against the original WhatsApp payload before persistence.
-- History sync belongs to the app in relay mode; this fork must continue rejecting local history-sync download/processing there.
 
 ## Debugging Workflow
 
