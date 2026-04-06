@@ -67,16 +67,13 @@ func (cli *Client) handleEncryptedMessage(ctx context.Context, node *waBinary.No
 					return
 				} else if cli.RelayMessageCallback(ctx, info, node) {
 					cli.Log.Debugf("Message intercepted by relay callback, skipping decryption")
-					// In relay mode, send the same receipts that upstream whatsmeow
-					// sends for peer messages. The primary expects both:
-					// 1. hist_sync receipt for history sync notifications from device 0
-					// 2. peer_msg receipt for all peer-category messages
-					if info.IsFromMe && info.Sender.Device == 0 && info.Category == "peer" {
-						go cli.sendProtocolMessageReceipt(ctx, info.ID, types.ReceiptTypeHistorySync)
-					}
-					if info.Category == "peer" {
-						go cli.sendProtocolMessageReceipt(ctx, info.ID, types.ReceiptTypePeerMsg)
-					}
+					// Protocol receipts (hist_sync, peer_msg) are NOT sent here.
+					// The relay backend controls their timing:
+					//   - peer_msg: sent after the ciphertext is durably queued
+					//   - hist_sync: sent only after the app confirms the message
+					//     was a history sync notification (via process results)
+					// This avoids (a) spurious hist_sync receipts for non-history
+					// peer messages and (b) sending receipts before durable storage.
 					return
 				}
 				cli.Log.Errorf("Relay transport callback declined encrypted message %s; refusing local decryption fallback", info.ID)

@@ -69,7 +69,7 @@ Flow:
 2. Encrypted `<enc>` nodes are intercepted before local Signal decryption.
 3. The callback is expected to persist the ciphertext and metadata externally.
 4. In relay mode, if the callback does not handle the message, local decrypt fallback is not allowed.
-5. Once the embedding backend has durably queued the ciphertext, it may send the WhatsApp transport receipt.
+5. Once the embedding backend has durably queued the ciphertext, it sends the WhatsApp transport receipt. The fork itself does not send any protocol receipts.
 
 This is the core guarantee of strict E2EE: relay mode must not quietly decrypt messages on the server because a callback was missing or declined to handle a stanza.
 
@@ -93,7 +93,7 @@ Relevant files:
 - if the callback handles the notification, the library acks it and stops
 - if the callback declines the notification, local fallback is refused
 
-`allowRelayTransportNotificationFallback()` currently returns `false`, which is correct for strict E2EE. Transport notifications must be converted into backend-owned bridge events, not consumed locally by the backend.
+`allowRelayTransportNotificationFallback()` allows fallback for a small allowlist of notification types (`disappearing_mode`, `mex`, `picture`, `status`, `newsletter`) that only drive transient event dispatch in upstream whatsmeow. Allowing fallback preserves normal ack behavior without reintroducing local app-state or history ownership. Note: `devices`, `w:gp2`, `account_sync`, `encrypt`, and `server_sync` are handled directly by the relay notification callback in the backend (`handleRelayNotification`), not through this fallback path. All other notification types must be converted into backend-owned bridge events.
 
 ### 5. Retry Receipts
 
@@ -137,7 +137,12 @@ History sync is delegated to the external client:
 
 The app decrypts history sync notifications and blobs locally. The server must not download and decrypt them.
 
-When a peer message from the primary device (device 0) is intercepted by the relay callback, the fork sends both `hist_sync` and `peer_msg` receipts. These tell the primary the companion received the initial sync and is ready for on-demand requests.
+The fork does not send protocol receipts (`hist_sync` or `peer_msg`) for peer messages. Receipt timing is controlled by the backend:
+
+- `peer_msg` receipt: sent by the backend relay layer (`handleRelayMessage`) after durable queueing of the ciphertext.
+- `hist_sync` receipt: sent by the backend (`sendDeferredHistSyncReceipt`) only after the app reports `result_type = "history_sync_processed"` in its process results. This prevents spurious `hist_sync` receipts for non-history peer messages (AppStateSyncKeyShare, LID migration sync, etc.).
+
+If CDN download fails for a history sync blob, the app sends a `HISTORY_SYNC_CHUNK_RETRY` peer message to re-request the chunk. The fork deduplicates these via `retriedChunkNotificationIDs`.
 
 ### 8. Prekey Lifecycle
 
@@ -151,17 +156,21 @@ Relevant files:
 The prekey lifecycle is split between the always-on server and the intermittent app:
 
 **App (intermittent, owns Signal private keys):**
-- Generates prekeys (200 on initial link + 100 from registration = 300, then 100 per replenishment batch)
+- Generates prekeys (200 initial + 100 per replenishment batch)
 - Sends prekey public material to the backend via bridge upload API
 - Replenishes on: app launch, message send, `prekeys_low` transport event
 
 **Fork/Backend (always on, transport only):**
-- Stores prekeys in RelayPreKeyStore buffer
+- Stores prekeys in RelayPreKeyStore buffer (in-memory) backed by PostgreSQL persistence (`whatsapp_e2ee_prekeys`, `whatsapp_e2ee_signed_prekeys` tables)
+- On restart or bridge hello, prekeys are hydrated from DB into the in-memory RelayPreKeyStore
+- Callbacks (`OnPreKeysUploaded`, `OnPreKeyRemoved`) write-through to DB so prekey state survives process restarts
 - Uploads prekeys to WhatsApp server when:
   - `handleConnectSuccess` detects server count < 5
   - `handleEncryptNotification` receives low-prekey signal from server
   - App triggers upload via bridge API
+- Emits `prekeys_low` transport event if server count < 5 on connect
 - Uses the app's identity key (persisted from pairing) in the upload IQ
+- Prekey selection is deterministic: lowest ID first (not random Go map iteration order)
 
 The fork never generates prekeys or identity keys. `NewDevice()` only creates a noise key for transport. The identity key, registration ID, and signed prekey come exclusively from the app via `ApplyToDevice`.
 
@@ -199,7 +208,9 @@ The server runs 24/7. The app is intermittent. This drives the split:
 | History sync blob download | App | Owns decryption keys |
 | AppState patch decryption | App | Owns AppState sync keys |
 | On-demand history requests | App | Constructs and encrypts the request |
-| Protocol receipts (hist_sync, peer_msg) | Server | Must send immediately on message receipt |
+| Protocol receipt: peer_msg | Server (backend relay layer) | Sent after durable ciphertext queueing |
+| Protocol receipt: hist_sync | Server (backend bridge layer) | Sent only after app confirms history_sync_processed |
+| Prekey DB persistence | Server | Must survive process restarts |
 | Transport event queuing | Server | Queues events for app to process later |
 
 When adding new features, ask: "Does this need to work while the app is asleep?" If yes, it belongs on the server. If it requires private key material, it belongs on the app. If both, the server holds a buffer and the app replenishes.
@@ -208,7 +219,7 @@ When adding new features, ask: "Does this need to work while the app is asleep?"
 
 - `client.go`: relay-mode flags, configuration validation, `RelayKeyApplyCallback`
 - `pair.go`: pair-success validation, external callback handoff, identity key persistence
-- `message.go`: message interception, SKDM forwarding, protocol receipts (hist_sync + peer_msg)
+- `message.go`: message interception, SKDM forwarding, push name extraction
 - `notification.go`: encrypt notification handler (prekey replenishment), notification interception
 - `retry.go`: retry-receipt forwarding
 - `send.go`: plaintext send rejection, `BuildHistorySyncRequest`, `BuildFullHistorySyncRequest`
