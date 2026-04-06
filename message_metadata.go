@@ -160,7 +160,7 @@ func peerMessageExtraAttrs(message *waE2E.Message) waBinary.Attrs {
 	protoMsg := message.GetProtocolMessage()
 	if protoMsg.GetType() == waE2E.ProtocolMessage_APP_STATE_SYNC_KEY_REQUEST {
 		attrs["push_priority"] = "high"
-	} else if protoMsg.GetPeerDataOperationRequestMessage().GetPeerDataOperationRequestType() == waE2E.PeerDataOperationRequestType_HISTORY_SYNC_ON_DEMAND {
+	} else if reqType := protoMsg.GetPeerDataOperationRequestMessage().GetPeerDataOperationRequestType(); reqType == waE2E.PeerDataOperationRequestType_HISTORY_SYNC_ON_DEMAND || reqType == waE2E.PeerDataOperationRequestType_HISTORY_SYNC_CHUNK_RETRY {
 		attrs["privacy_sensitive"] = "1"
 	}
 	return attrs

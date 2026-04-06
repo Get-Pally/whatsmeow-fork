@@ -29,6 +29,24 @@ func TestPeerMessageAttrsMarksHistorySyncOnDemandRequestsPrivacySensitive(t *tes
 	}
 }
 
+func TestPeerMessageAttrsMarksHistorySyncChunkRetryPrivacySensitive(t *testing.T) {
+	attrs := peerMessageAttrs(types.NewJID("15551234567", types.DefaultUserServer), types.MessageID("chunk-retry-id"), &waE2E.Message{
+		ProtocolMessage: &waE2E.ProtocolMessage{
+			Type: waE2E.ProtocolMessage_PEER_DATA_OPERATION_REQUEST_MESSAGE.Enum(),
+			PeerDataOperationRequestMessage: &waE2E.PeerDataOperationRequestMessage{
+				PeerDataOperationRequestType: waE2E.PeerDataOperationRequestType_HISTORY_SYNC_CHUNK_RETRY.Enum(),
+			},
+		},
+	})
+
+	if got := attrs["privacy_sensitive"]; got != "1" {
+		t.Fatalf("expected chunk retry request to be marked privacy-sensitive, got %v", got)
+	}
+	if _, ok := attrs["push_priority"]; ok {
+		t.Fatalf("did not expect chunk retry request to set push_priority")
+	}
+}
+
 func TestPeerMessageAttrsKeepsAppStateRequestsHighPriority(t *testing.T) {
 	attrs := peerMessageAttrs(types.NewJID("15551234567", types.DefaultUserServer), types.MessageID("app-state-request-id"), &waE2E.Message{
 		ProtocolMessage: &waE2E.ProtocolMessage{
