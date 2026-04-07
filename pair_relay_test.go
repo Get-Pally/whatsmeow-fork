@@ -6,6 +6,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
+	"errors"
 	"testing"
 
 	"google.golang.org/protobuf/proto"
@@ -14,10 +15,59 @@ import (
 
 	"go.mau.fi/whatsmeow/proto/waAdv"
 	"go.mau.fi/whatsmeow/store"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/util/keys"
 )
 
-func TestValidateRelayPairSuccessResponseAcceptsClientBuiltResponse(t *testing.T) {
+type relayPairSuccessFixture struct {
+	pairSuccessPayload   []byte
+	pairSuccessResponse  *RelayPairSuccessResponse
+	companionIdentityKey *keys.KeyPair
+	advSecret            []byte
+}
+
+type recordingDeviceContainer struct {
+	putCalls int
+}
+
+func (r *recordingDeviceContainer) PutDevice(ctx context.Context, device *store.Device) error {
+	r.putCalls++
+	return nil
+}
+
+func (r *recordingDeviceContainer) DeleteDevice(ctx context.Context, device *store.Device) error {
+	return nil
+}
+
+type recordingLIDStore struct {
+	putCalls int
+}
+
+func (r *recordingLIDStore) PutManyLIDMappings(ctx context.Context, mappings []store.LIDMapping) error {
+	r.putCalls += len(mappings)
+	return nil
+}
+
+func (r *recordingLIDStore) PutLIDMapping(ctx context.Context, lid, jid types.JID) error {
+	r.putCalls++
+	return nil
+}
+
+func (r *recordingLIDStore) GetPNForLID(ctx context.Context, lid types.JID) (types.JID, error) {
+	return types.EmptyJID, nil
+}
+
+func (r *recordingLIDStore) GetLIDForPN(ctx context.Context, pn types.JID) (types.JID, error) {
+	return types.EmptyJID, nil
+}
+
+func (r *recordingLIDStore) GetManyLIDsForPNs(ctx context.Context, pns []types.JID) (map[types.JID]types.JID, error) {
+	return map[types.JID]types.JID{}, nil
+}
+
+func buildRelayPairSuccessFixture(t *testing.T) relayPairSuccessFixture {
+	t.Helper()
+
 	companionSeed := [32]byte{
 		0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
 		0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
@@ -86,26 +136,76 @@ func TestValidateRelayPairSuccessResponseAcceptsClientBuiltResponse(t *testing.T
 		t.Fatalf("marshal self-signed identity: %v", err)
 	}
 
+	return relayPairSuccessFixture{
+		pairSuccessPayload: pairSuccessPayload,
+		pairSuccessResponse: &RelayPairSuccessResponse{
+			Account:        accountIdentityBytes,
+			DeviceIdentity: selfSignedIdentityBytes,
+			KeyIndex:       42,
+		},
+		companionIdentityKey: companionIdentity,
+		advSecret:            advSecret,
+	}
+}
+
+func TestValidateRelayPairSuccessResponseAcceptsClientBuiltResponse(t *testing.T) {
+	fixture := buildRelayPairSuccessFixture(t)
 	cli := NewClient(&store.Device{
-		IdentityKey:  companionIdentity,
-		AdvSecretKey: advSecret,
+		IdentityKey:  fixture.companionIdentityKey,
+		AdvSecretKey: fixture.advSecret,
 	}, nil)
 
-	parsedOriginalIdentity, parsedDetails, err := cli.parseAndValidatePairSuccess(context.Background(), pairSuccessPayload, "req-1")
+	parsedOriginalIdentity, parsedDetails, err := cli.parseAndValidatePairSuccess(context.Background(), fixture.pairSuccessPayload, "req-1")
 	if err != nil {
 		t.Fatalf("parseAndValidatePairSuccess returned error: %v", err)
 	}
 
-	account, err := cli.validateRelayPairSuccessResponse(&RelayPairSuccessResponse{
-		Account:        accountIdentityBytes,
-		DeviceIdentity: selfSignedIdentityBytes,
-		KeyIndex:       42,
-	}, parsedOriginalIdentity, parsedDetails)
+	account, err := cli.validateRelayPairSuccessResponse(fixture.pairSuccessResponse, parsedOriginalIdentity, parsedDetails)
 	if err != nil {
 		t.Fatalf("validateRelayPairSuccessResponse returned error: %v", err)
 	}
 	if len(account.GetDeviceSignature()) != 64 {
 		t.Fatalf("expected persisted relay account to contain device signature, got %d bytes", len(account.GetDeviceSignature()))
+	}
+}
+
+func TestHandleRelayPairFailsWhenRelayKeyApplyCallbackFails(t *testing.T) {
+	fixture := buildRelayPairSuccessFixture(t)
+	container := &recordingDeviceContainer{}
+	lidStore := &recordingLIDStore{}
+	jid := types.NewJID("15551234567", types.DefaultUserServer)
+	lid := types.NewJID("15551234567", types.HiddenUserServer)
+	callbackErr := errors.New("relay key apply failed")
+
+	cli := NewClient(&store.Device{
+		Container:    container,
+		LIDs:         lidStore,
+		IdentityKey:  fixture.companionIdentityKey,
+		AdvSecretKey: fixture.advSecret,
+	}, nil)
+	cli.RelayPairSuccessCallback = func(ctx context.Context, request *RelayPairSuccessRequest) (*RelayPairSuccessResponse, error) {
+		return fixture.pairSuccessResponse, nil
+	}
+	cli.RelayKeyApplyCallback = func(device *store.Device) error {
+		return callbackErr
+	}
+
+	err := cli.handleRelayPair(context.Background(), fixture.pairSuccessPayload, "req-1", "Test Business", "ios", jid, lid)
+	if err == nil {
+		t.Fatal("expected relay pair to fail when RelayKeyApplyCallback fails")
+	}
+	var dbErr *PairDatabaseError
+	if !errors.As(err, &dbErr) {
+		t.Fatalf("expected PairDatabaseError, got %T: %v", err, err)
+	}
+	if !errors.Is(err, callbackErr) {
+		t.Fatalf("expected relay key apply error to be wrapped, got %v", err)
+	}
+	if container.putCalls != 0 {
+		t.Fatalf("expected relay pair to abort before saving the device, got %d save call(s)", container.putCalls)
+	}
+	if lidStore.putCalls != 0 {
+		t.Fatalf("expected relay pair to abort before storing LID mappings, got %d put call(s)", lidStore.putCalls)
 	}
 }
 

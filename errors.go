@@ -17,6 +17,7 @@ import (
 // Miscellaneous errors
 var (
 	ErrClientIsNil     = errors.New("client is nil")
+	ErrDeviceStoreNil  = errors.New("device store is nil")
 	ErrNoSession       = errors.New("can't encrypt message for device: no signal session established")
 	ErrIQTimedOut      = errors.New("info query timed out")
 	ErrNotConnected    = errors.New("websocket not connected")

@@ -46,6 +46,16 @@ func TestValidateRelayTransportConfigurationRequiresSKDMCallback(t *testing.T) {
 	}
 }
 
+func TestValidateRelayTransportConfigurationRequiresDeviceStore(t *testing.T) {
+	cli := NewClient(nil, nil)
+	cli.SetRelayTransportMode(true)
+
+	err := cli.validateRelayTransportConfiguration()
+	if err != ErrDeviceStoreNil {
+		t.Fatalf("expected device-store-nil error, got %v", err)
+	}
+}
+
 func TestValidateRelayTransportConfigurationAllowsLinkedReconnectWithoutBootstrapKeys(t *testing.T) {
 	jid := types.NewJID("15551234567", types.DefaultUserServer)
 	device := &store.Device{

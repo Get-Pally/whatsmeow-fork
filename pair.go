@@ -267,7 +267,9 @@ func (cli *Client) handleRelayPair(ctx context.Context, deviceIdentityBytes []by
 	if cli.RelayKeyApplyCallback != nil {
 		cli.Log.Infof("[RELAY_KEY_APPLY] Re-applying external keys before pair save for %s", jid)
 		if err := cli.RelayKeyApplyCallback(cli.Store); err != nil {
-			cli.Log.Warnf("[RELAY_KEY_APPLY] Failed to re-apply relay keys before pair save: %v", err)
+			cli.Log.Errorf("[RELAY_KEY_APPLY] Failed to re-apply relay keys before pair save: %v", err)
+			cli.sendPairError(ctx, reqID, 500, "internal-error")
+			return &PairDatabaseError{"failed to re-apply relay keys before pair save", err}
 		} else if cli.Store.IdentityKey != nil && cli.Store.IdentityKey.Pub != nil {
 			cli.Log.Infof("[RELAY_KEY_APPLY] Identity key after re-apply: %x", cli.Store.IdentityKey.Pub[:8])
 		}

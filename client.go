@@ -347,7 +347,7 @@ func (cli *Client) validateRelayTransportConfiguration() error {
 	if !cli.IsRelayTransportMode() {
 		return nil
 	} else if cli.Store == nil {
-		return ErrClientIsNil
+		return ErrDeviceStoreNil
 	} else if !cli.Store.TransportOnly {
 		return ErrRelayTransportRequiresTransportOnlyStore
 	} else if cli.Store.IdentityKey != nil && cli.Store.IdentityKey.Priv != nil {

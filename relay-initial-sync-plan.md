@@ -208,11 +208,11 @@ This is the primary correctness bug to fix before doing full backfill.
 
 ## Additional Gaps
 
-### 1. No durable local relay inbox
+### 1. Optional durable local relay inbox
 
-Incoming bridge envelopes are not yet committed into a dedicated durable local inbox before delivery/process acks are sent.
+Incoming bridge envelopes are not yet committed into a dedicated durable local inbox before delivery/process acks are sent. This is an optional future architecture improvement, not a correctness requirement, as long as process acks remain delayed until durable import/terminal state.
 
-Need:
+If we add it later, it should provide:
 
 - a durable, replayable local inbox
 - local import state per queue item
@@ -506,7 +506,9 @@ No backend decryption changes are required.
 
 ## Required Code Changes
 
-## 1. App: durable inbox ingest before any ack
+## 1. Optional future: durable inbox ingest before any ack
+
+This section describes an optional future local-inbox architecture. It is not required for correctness because the backend replay queue remains authoritative until the app sends a process result.
 
 Files to change:
 
@@ -514,7 +516,7 @@ Files to change:
 - `pally-app/seoul/Pally/Services/Messaging/WhatsAppRelay/Core/WhatsAppE2EEManager.swift`
 - `pally-app/seoul/Pally/Services/Messaging/WhatsApp/RelayWhatsAppService.swift`
 
-Changes:
+Optional changes:
 
 - When `bridgePoll` returns envelopes, write them into `wa_relay_inbox` in a transaction.
 - Persist the newest durable inbox cursor only after that transaction commits.
@@ -522,7 +524,7 @@ Changes:
 - `markQueuedMessageDelivered(...)` should run only after local inbox commit.
 - `markQueuedMessageProcessed(...)` should run only after message/history import commit.
 
-## 2. App: convert queue processing into inbox worker
+## 2. Optional future: convert queue processing into inbox worker
 
 Replace "decrypt directly from bridge response" with:
 
@@ -727,7 +729,8 @@ These rules are required for correctness:
 
 Send only after:
 
-- envelope is durably written to `wa_relay_inbox`
+- the app has durably recorded enough local state to safely resume or replay processing
+- if `wa_relay_inbox` exists, that durable boundary can be the inbox write
 
 Do not send only because the envelope was decoded in memory.
 
@@ -744,7 +747,7 @@ Send only after:
 Persist distinct local checkpoints:
 
 - highest cursor fetched from backend
-- highest cursor durably inboxed
+- highest cursor durably recorded locally
 - highest cursor delivery-acked
 - highest cursor fully processed
 
@@ -792,10 +795,10 @@ These logs should make it obvious where a startup is stuck:
 
 ## Phase 1: correctness first
 
-1. Add `wa_relay_inbox`.
-2. Ingest all bridge envelopes into it before any acks.
-3. Delay process acks until DB/history import commit.
-4. Add durable sync checkpoints.
+1. Delay process acks until DB/history import commit.
+2. Keep message and history imports idempotent so backend replay is safe.
+3. Add durable sync checkpoints.
+4. Treat `wa_relay_inbox` as optional future work, not a correctness prerequisite.
 
 This is the minimum needed to make startup restart-safe.
 
