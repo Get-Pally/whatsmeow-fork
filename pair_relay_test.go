@@ -11,6 +11,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"go.mau.fi/libsignal/ecc"
+
 	"go.mau.fi/whatsmeow/proto/waAdv"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/util/keys"
