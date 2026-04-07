@@ -112,6 +112,51 @@ func TestDeleteDevicePreservesGlobalMappingsWhileOtherDevicesRemain(t *testing.T
 	}
 }
 
+func TestGetDeviceMatchesExactJIDOnly(t *testing.T) {
+	container := newSQLiteTestContainer(t)
+	ctx := context.Background()
+
+	phoneJID := types.NewJID("15551239999", types.DefaultUserServer)
+	deviceJID := types.JID{User: phoneJID.User, Device: 7, Server: phoneJID.Server}
+
+	phoneDevice := container.NewDevice()
+	phoneDevice.ID = &phoneJID
+	if err := phoneDevice.Save(ctx); err != nil {
+		t.Fatalf("failed to save phone device: %v", err)
+	}
+
+	adDevice := container.NewDevice()
+	adDevice.ID = &deviceJID
+	if err := adDevice.Save(ctx); err != nil {
+		t.Fatalf("failed to save AD device: %v", err)
+	}
+
+	loadedPhone, err := container.GetDevice(ctx, phoneJID)
+	if err != nil {
+		t.Fatalf("failed to load phone device: %v", err)
+	}
+	if loadedPhone == nil || loadedPhone.ID == nil || loadedPhone.ID.String() != phoneJID.String() {
+		t.Fatalf("expected exact phone JID match %s, got %#v", phoneJID, loadedPhone)
+	}
+
+	loadedAD, err := container.GetDevice(ctx, deviceJID)
+	if err != nil {
+		t.Fatalf("failed to load AD device: %v", err)
+	}
+	if loadedAD == nil || loadedAD.ID == nil || loadedAD.ID.String() != deviceJID.String() {
+		t.Fatalf("expected exact AD JID match %s, got %#v", deviceJID, loadedAD)
+	}
+
+	otherDeviceJID := types.JID{User: phoneJID.User, Device: 8, Server: phoneJID.Server}
+	loadedOther, err := container.GetDevice(ctx, otherDeviceJID)
+	if err != nil {
+		t.Fatalf("failed to load non-existent sibling AD device: %v", err)
+	}
+	if loadedOther != nil {
+		t.Fatalf("expected no match for sibling AD JID %s, got %s", otherDeviceJID, loadedOther.ID)
+	}
+}
+
 func newSQLiteTestContainer(t *testing.T) *Container {
 	t.Helper()
 
