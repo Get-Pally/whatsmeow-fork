@@ -74,7 +74,7 @@ func (device *Device) WithCachedSessions(ctx context.Context, addresses []string
 		return nil, ctx, nil
 	}
 
-	sessions, err := device.Sessions.GetManySessions(ctx, addresses)
+	sessions, err := device.Companion.Sessions.GetManySessions(ctx, addresses)
 	if err != nil {
 		return nil, ctx, fmt.Errorf("failed to prefetch sessions: %w", err)
 	}
@@ -115,7 +115,7 @@ func (device *Device) PutCachedSessions(ctx context.Context) error {
 		}
 	}
 	if len(dirtySessions) > 0 {
-		err := device.Sessions.PutManySessions(ctx, dirtySessions)
+		err := device.Companion.Sessions.PutManySessions(ctx, dirtySessions)
 		if err != nil {
 			return fmt.Errorf("failed to store cached sessions: %w", err)
 		}

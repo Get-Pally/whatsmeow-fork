@@ -38,11 +38,11 @@ func (cli *Client) handleEncryptNotification(ctx context.Context, node *waBinary
 		}
 	} else if _, ok := node.GetOptionalChildByTag("identity"); ok {
 		cli.Log.Debugf("Got identity change for %s: %s, deleting all identities/sessions for that number", from, node.XMLString())
-		err := cli.Store.Identities.DeleteAllIdentities(ctx, from.User)
+		err := cli.Store.Companion.Identities.DeleteAllIdentities(ctx, from.User)
 		if err != nil {
 			cli.Log.Warnf("Failed to delete all identities of %s from store after identity change: %v", from, err)
 		}
-		err = cli.Store.Sessions.DeleteAllSessions(ctx, from.User)
+		err = cli.Store.Companion.Sessions.DeleteAllSessions(ctx, from.User)
 		if err != nil {
 			cli.Log.Warnf("Failed to delete all sessions of %s from store after identity change: %v", from, err)
 		}
@@ -54,6 +54,10 @@ func (cli *Client) handleEncryptNotification(ctx context.Context, node *waBinary
 }
 
 func (cli *Client) handleAppStateNotification(ctx context.Context, node *waBinary.Node) {
+	if cli.IsRelayTransportMode() {
+		cli.Log.Debugf("Skipping app state notification handling in relay transport mode")
+		return
+	}
 	for _, collection := range node.GetChildrenByTag("collection") {
 		ag := collection.AttrGetter()
 		name := appstate.WAPatchName(ag.String("name"))
@@ -72,24 +76,41 @@ func (cli *Client) handleAppStateNotification(ctx context.Context, node *waBinar
 
 func (cli *Client) handlePictureNotification(ctx context.Context, node *waBinary.Node) {
 	ts := node.AttrGetter().UnixTime("t")
+	parentAG := node.AttrGetter()
+	parentJID := parentAG.OptionalJID("from")
 	for _, child := range node.GetChildren() {
-		ag := child.AttrGetter()
+		childAG := child.AttrGetter()
 		var evt events.Picture
 		evt.Timestamp = ts
-		evt.JID = ag.JID("jid")
-		evt.Author = ag.OptionalJIDOrEmpty("author")
+		if jid := childAG.OptionalJID("jid"); jid != nil {
+			evt.JID = *jid
+		} else if parentJID != nil {
+			evt.JID = *parentJID
+		}
+		evt.Author = childAG.OptionalJIDOrEmpty("author")
 		if child.Tag == "delete" {
 			evt.Remove = true
 		} else if child.Tag == "add" {
-			evt.PictureID = ag.String("id")
+			evt.PictureID = childAG.OptionalString("id")
 		} else if child.Tag == "set" {
-			// TODO sometimes there's a hash and no ID?
-			evt.PictureID = ag.String("id")
+			// Some live picture notifications only include a hash on the child and
+			// the target JID on the parent notification stanza.
+			evt.PictureID = childAG.OptionalString("id")
+			if evt.PictureID == "" {
+				evt.PictureID = childAG.OptionalString("hash")
+			}
 		} else {
 			continue
 		}
-		if !ag.OK() {
-			cli.Log.Debugf("Ignoring picture change notification with unexpected attributes: %v", ag.Error())
+		var unexpected []string
+		if evt.JID.IsEmpty() {
+			unexpected = append(unexpected, "missing picture target JID")
+		}
+		if !evt.Remove && evt.PictureID == "" {
+			unexpected = append(unexpected, "missing picture id/hash")
+		}
+		if len(unexpected) > 0 {
+			cli.Log.Debugf("Ignoring picture change notification with unexpected attributes: %v", unexpected)
 			continue
 		}
 		cli.dispatchEvent(&evt)
@@ -252,6 +273,10 @@ func (cli *Client) handleAccountSyncNotification(ctx context.Context, node *waBi
 }
 
 func (cli *Client) handlePrivacyTokenNotification(ctx context.Context, node *waBinary.Node) {
+	if cli.IsRelayTransportMode() {
+		cli.Log.Debugf("Skipping privacy token storage in relay transport mode")
+		return
+	}
 	ownJID := cli.getOwnID().ToNonAD()
 	ownLID := cli.getOwnLID().ToNonAD()
 	if ownJID.IsEmpty() {
@@ -287,7 +312,7 @@ func (cli *Client) handlePrivacyTokenNotification(ctx context.Context, node *waB
 			if !ag.OK() {
 				cli.Log.Warnf("privacy_token notification is missing some fields: %v", ag.Error())
 			}
-			err := cli.Store.PrivacyTokens.PutPrivacyTokens(ctx, store.PrivacyToken{
+			err := cli.Store.Companion.PrivacyTokens.PutPrivacyTokens(ctx, store.PrivacyToken{
 				User:      sender,
 				Token:     token,
 				Timestamp: timestamp,
@@ -412,6 +437,34 @@ func (cli *Client) handleStatusNotification(ctx context.Context, node *waBinary.
 }
 
 func (cli *Client) handleNotification(ctx context.Context, node *waBinary.Node) {
+	if cli.RelayNotificationCallback != nil {
+		handled, err := cli.RelayNotificationCallback(ctx, node)
+		if err != nil {
+			cli.Log.Warnf("Relay notification callback failed: %v", err)
+			return
+		} else if handled {
+			cli.backgroundIfAsyncAck(func() {
+				cli.sendAck(ctx, node, 0)
+			})
+			// Even though the relay callback handled the notification (queuing a
+			// transport event to the app), also let the fork handle encrypt
+			// notifications directly. This uploads any available prekeys from the
+			// relay store immediately instead of waiting for the app round-trip.
+			if notifType := node.AttrGetter().OptionalString("type"); notifType == "encrypt" {
+				go cli.handleEncryptNotification(ctx, node)
+			}
+			return
+		} else if cli.IsRelayTransportMode() {
+			notifType := node.AttrGetter().OptionalString("type")
+			if allowRelayTransportNotificationFallback(notifType) {
+				cli.Log.Debugf("Relay transport callback declined notification %s/%v; allowing transport-safe local fallback", node.Tag, node.Attrs["type"])
+			} else {
+				cli.Log.Errorf("Relay transport callback declined notification %s/%v; refusing local notification fallback", node.Tag, node.Attrs["type"])
+				return
+			}
+		}
+	}
+
 	ag := node.AttrGetter()
 	notifType := ag.String("type")
 	if !ag.OK() {
@@ -462,5 +515,17 @@ func (cli *Client) handleNotification(ctx context.Context, node *waBinary.Node) 
 	// Other types: business, disappearing_mode, server, status, pay, psa
 	default:
 		cli.Log.Debugf("Unhandled notification with type %s", notifType)
+	}
+}
+
+func allowRelayTransportNotificationFallback(notifType string) bool {
+	switch notifType {
+	// These notification types only drive transient event dispatch in upstream whatsmeow.
+	// Allowing fallback here preserves the normal ack behavior in relay mode without
+	// reintroducing local app-state/history ownership.
+	case "disappearing_mode", "mex", "picture", "status", "newsletter":
+		return true
+	default:
+		return false
 	}
 }

@@ -32,9 +32,9 @@ import (
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/proto/waAICommon"
 	"go.mau.fi/whatsmeow/proto/waCommon"
+	"go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
-	"go.mau.fi/whatsmeow/types/events"
 )
 
 const WebMessageIDPrefix = "3EB0"
@@ -185,6 +185,9 @@ type SendRequestExtra struct {
 func (cli *Client) SendMessage(ctx context.Context, to types.JID, message *waE2E.Message, extra ...SendRequestExtra) (resp SendResponse, err error) {
 	if cli == nil {
 		err = ErrClientIsNil
+		return
+	} else if cli.IsRelayTransportMode() {
+		err = ErrRelayTransportRequiresPreEncryptedSend
 		return
 	}
 	var req SendRequestExtra
@@ -380,7 +383,7 @@ func (cli *Client) SendMessage(ctx context.Context, to types.JID, message *waE2E
 	}
 
 	if message.GetMessageContextInfo().GetMessageSecret() != nil {
-		err = cli.Store.MsgSecrets.PutMessageSecret(ctx, to, ownID, req.ID, message.GetMessageContextInfo().GetMessageSecret())
+		err = cli.Store.Companion.MsgSecrets.PutMessageSecret(ctx, to, ownID, req.ID, message.GetMessageContextInfo().GetMessageSecret())
 		if err != nil {
 			cli.Log.Warnf("Failed to store message secret key for outgoing message %s: %v", req.ID, err)
 		} else {
@@ -565,11 +568,35 @@ func (cli *Client) BuildHistorySyncRequest(lastKnownMessageInfo *types.MessageIn
 			PeerDataOperationRequestMessage: &waE2E.PeerDataOperationRequestMessage{
 				PeerDataOperationRequestType: waE2E.PeerDataOperationRequestType_HISTORY_SYNC_ON_DEMAND.Enum(),
 				HistorySyncOnDemandRequest: &waE2E.PeerDataOperationRequestMessage_HistorySyncOnDemandRequest{
-					ChatJID:              proto.String(lastKnownMessageInfo.Chat.String()),
-					OldestMsgID:          proto.String(lastKnownMessageInfo.ID),
-					OldestMsgFromMe:      proto.Bool(lastKnownMessageInfo.IsFromMe),
-					OnDemandMsgCount:     proto.Int32(int32(count)),
-					OldestMsgTimestampMS: proto.Int64(lastKnownMessageInfo.Timestamp.UnixMilli()),
+					ChatJID:          proto.String(lastKnownMessageInfo.Chat.String()),
+					OldestMsgID:      proto.String(lastKnownMessageInfo.ID),
+					OldestMsgFromMe:  proto.Bool(lastKnownMessageInfo.IsFromMe),
+					OnDemandMsgCount: proto.Int32(int32(count)),
+					// Despite the field name saying "MS", WhatsApp expects seconds here.
+					OldestMsgTimestampMS: proto.Int64(lastKnownMessageInfo.Timestamp.Unix()),
+				},
+			},
+		},
+	}
+}
+
+// BuildFullHistorySyncRequest builds a message to re-request the full initial history sync
+// from the user's primary device. This is useful when the companion missed the initial sync
+// (e.g., because the transport connected after the sync messages expired in the server queue).
+//
+// The built message can be sent using Client.SendPeerMessage.
+// The response will come as one or more *events.HistorySync events with the initial sync data.
+func BuildFullHistorySyncRequest(requestID string, historySyncConfig *waCompanionReg.DeviceProps_HistorySyncConfig) *waE2E.Message {
+	return &waE2E.Message{
+		ProtocolMessage: &waE2E.ProtocolMessage{
+			Type: waE2E.ProtocolMessage_PEER_DATA_OPERATION_REQUEST_MESSAGE.Enum(),
+			PeerDataOperationRequestMessage: &waE2E.PeerDataOperationRequestMessage{
+				PeerDataOperationRequestType: waE2E.PeerDataOperationRequestType_FULL_HISTORY_SYNC_ON_DEMAND.Enum(),
+				FullHistorySyncOnDemandRequest: &waE2E.PeerDataOperationRequestMessage_FullHistorySyncOnDemandRequest{
+					RequestMetadata: &waE2E.FullHistorySyncOnDemandRequestMetadata{
+						RequestID: proto.String(requestID),
+					},
+					HistorySyncConfig: historySyncConfig,
 				},
 			},
 		},
@@ -862,7 +889,7 @@ func (cli *Client) sendDM(
 		node.Content = append(node.GetChildren(), cli.getMessageReportingToken(messagePlaintext, message, ownID, to, id))
 	}
 
-	if tcToken, err := cli.Store.PrivacyTokens.GetPrivacyToken(ctx, to); err != nil {
+	if tcToken, err := cli.Store.Companion.PrivacyTokens.GetPrivacyToken(ctx, to); err != nil {
 		cli.Log.Warnf("Failed to get privacy token for %s: %v", to, err)
 	} else if tcToken != nil {
 		node.Content = append(node.GetChildren(), waBinary.Node{
@@ -880,158 +907,6 @@ func (cli *Client) sendDM(
 	return phash, data, nil
 }
 
-func getTypeFromMessage(msg *waE2E.Message) string {
-	switch {
-	case msg.ViewOnceMessage != nil:
-		return getTypeFromMessage(msg.ViewOnceMessage.Message)
-	case msg.ViewOnceMessageV2 != nil:
-		return getTypeFromMessage(msg.ViewOnceMessageV2.Message)
-	case msg.ViewOnceMessageV2Extension != nil:
-		return getTypeFromMessage(msg.ViewOnceMessageV2Extension.Message)
-	case msg.LottieStickerMessage != nil:
-		return getTypeFromMessage(msg.LottieStickerMessage.Message)
-	case msg.EphemeralMessage != nil:
-		return getTypeFromMessage(msg.EphemeralMessage.Message)
-	case msg.DocumentWithCaptionMessage != nil:
-		return getTypeFromMessage(msg.DocumentWithCaptionMessage.Message)
-	case msg.ReactionMessage != nil, msg.EncReactionMessage != nil:
-		return "reaction"
-	case msg.PollCreationMessage != nil, msg.PollUpdateMessage != nil:
-		return "poll"
-	case getMediaTypeFromMessage(msg) != "":
-		return "media"
-	case msg.Conversation != nil, msg.ExtendedTextMessage != nil, msg.ProtocolMessage != nil:
-		return "text"
-	default:
-		return "text"
-	}
-}
-
-func getMediaTypeFromMessage(msg *waE2E.Message) string {
-	switch {
-	case msg.ViewOnceMessage != nil:
-		return getMediaTypeFromMessage(msg.ViewOnceMessage.Message)
-	case msg.ViewOnceMessageV2 != nil:
-		return getMediaTypeFromMessage(msg.ViewOnceMessageV2.Message)
-	case msg.ViewOnceMessageV2Extension != nil:
-		return getMediaTypeFromMessage(msg.ViewOnceMessageV2Extension.Message)
-	case msg.LottieStickerMessage != nil:
-		return getMediaTypeFromMessage(msg.LottieStickerMessage.Message)
-	case msg.EphemeralMessage != nil:
-		return getMediaTypeFromMessage(msg.EphemeralMessage.Message)
-	case msg.DocumentWithCaptionMessage != nil:
-		return getMediaTypeFromMessage(msg.DocumentWithCaptionMessage.Message)
-	case msg.ExtendedTextMessage != nil && msg.ExtendedTextMessage.Title != nil:
-		return "url"
-	case msg.ImageMessage != nil:
-		return "image"
-	case msg.StickerMessage != nil:
-		return "sticker"
-	case msg.DocumentMessage != nil:
-		return "document"
-	case msg.AudioMessage != nil:
-		if msg.AudioMessage.GetPTT() {
-			return "ptt"
-		} else {
-			return "audio"
-		}
-	case msg.VideoMessage != nil:
-		if msg.VideoMessage.GetGifPlayback() {
-			return "gif"
-		} else {
-			return "video"
-		}
-	case msg.ContactMessage != nil:
-		return "vcard"
-	case msg.ContactsArrayMessage != nil:
-		return "contact_array"
-	case msg.ListMessage != nil:
-		return "list"
-	case msg.ListResponseMessage != nil:
-		return "list_response"
-	case msg.ButtonsResponseMessage != nil:
-		return "buttons_response"
-	case msg.OrderMessage != nil:
-		return "order"
-	case msg.ProductMessage != nil:
-		return "product"
-	case msg.InteractiveResponseMessage != nil:
-		return "native_flow_response"
-	default:
-		return ""
-	}
-}
-
-func getButtonTypeFromMessage(msg *waE2E.Message) string {
-	switch {
-	case msg.ViewOnceMessage != nil:
-		return getButtonTypeFromMessage(msg.ViewOnceMessage.Message)
-	case msg.ViewOnceMessageV2 != nil:
-		return getButtonTypeFromMessage(msg.ViewOnceMessageV2.Message)
-	case msg.EphemeralMessage != nil:
-		return getButtonTypeFromMessage(msg.EphemeralMessage.Message)
-	case msg.ButtonsMessage != nil:
-		return "buttons"
-	case msg.ButtonsResponseMessage != nil:
-		return "buttons_response"
-	case msg.ListMessage != nil:
-		return "list"
-	case msg.ListResponseMessage != nil:
-		return "list_response"
-	case msg.InteractiveResponseMessage != nil:
-		return "interactive_response"
-	default:
-		return ""
-	}
-}
-
-func getButtonAttributes(msg *waE2E.Message) waBinary.Attrs {
-	switch {
-	case msg.ViewOnceMessage != nil:
-		return getButtonAttributes(msg.ViewOnceMessage.Message)
-	case msg.ViewOnceMessageV2 != nil:
-		return getButtonAttributes(msg.ViewOnceMessageV2.Message)
-	case msg.EphemeralMessage != nil:
-		return getButtonAttributes(msg.EphemeralMessage.Message)
-	case msg.TemplateMessage != nil:
-		return waBinary.Attrs{}
-	case msg.ListMessage != nil:
-		return waBinary.Attrs{
-			"v":    "2",
-			"type": strings.ToLower(waE2E.ListMessage_ListType_name[int32(msg.ListMessage.GetListType())]),
-		}
-	default:
-		return waBinary.Attrs{}
-	}
-}
-
-const RemoveReactionText = ""
-
-func getEditAttribute(msg *waE2E.Message) types.EditAttribute {
-	switch {
-	case msg.EditedMessage != nil && msg.EditedMessage.Message != nil:
-		return getEditAttribute(msg.EditedMessage.Message)
-	case msg.ProtocolMessage != nil && msg.ProtocolMessage.GetKey() != nil:
-		switch msg.ProtocolMessage.GetType() {
-		case waE2E.ProtocolMessage_REVOKE:
-			if msg.ProtocolMessage.GetKey().GetFromMe() {
-				return types.EditAttributeSenderRevoke
-			} else {
-				return types.EditAttributeAdminRevoke
-			}
-		case waE2E.ProtocolMessage_MESSAGE_EDIT:
-			if msg.ProtocolMessage.EditedMessage != nil {
-				return types.EditAttributeMessageEdit
-			}
-		}
-	case msg.ReactionMessage != nil && msg.ReactionMessage.GetText() == RemoveReactionText:
-		return types.EditAttributeSenderRevoke
-	case msg.KeepInChatMessage != nil && msg.KeepInChatMessage.GetKey().GetFromMe() && msg.KeepInChatMessage.GetKeepType() == waE2E.KeepType_UNDO_KEEP_FOR_ALL:
-		return types.EditAttributeSenderRevoke
-	}
-	return types.EditAttributeEmpty
-}
-
 func (cli *Client) preparePeerMessageNode(
 	ctx context.Context,
 	to types.JID,
@@ -1039,15 +914,7 @@ func (cli *Client) preparePeerMessageNode(
 	message *waE2E.Message,
 	timings *MessageDebugTimings,
 ) (*waBinary.Node, error) {
-	attrs := waBinary.Attrs{
-		"id":       id,
-		"type":     "text",
-		"category": "peer",
-		"to":       to,
-	}
-	if message.GetProtocolMessage().GetType() == waE2E.ProtocolMessage_APP_STATE_SYNC_KEY_REQUEST {
-		attrs["push_priority"] = "high"
-	}
+	attrs := peerMessageAttrs(to, id, message)
 	start := time.Now()
 	plaintext, err := proto.Marshal(message)
 	timings.Marshal = time.Since(start)
@@ -1084,10 +951,18 @@ func (cli *Client) preparePeerMessageNode(
 	}, nil
 }
 
+func peerMessageAttrs(to types.JID, id types.MessageID, message *waE2E.Message) waBinary.Attrs {
+	attrs := waBinary.Attrs{
+		"id":       id,
+		"category": "peer",
+		"to":       to,
+	}
+	return applyMessageNodeMetadata(attrs, BuildMessageNodeMetadata(message, MessageNodeMetadataOptions{Peer: true}))
+}
+
 func (cli *Client) getMessageContent(
 	baseNode waBinary.Node,
-	message *waE2E.Message,
-	msgAttrs waBinary.Attrs,
+	metadata MessageNodeMetadata,
 	includeIdentity bool,
 	extraParams nodeExtraParams,
 ) []waBinary.Node {
@@ -1095,15 +970,11 @@ func (cli *Client) getMessageContent(
 	if includeIdentity {
 		content = append(content, cli.makeDeviceIdentityNode())
 	}
-	if msgAttrs["type"] == "poll" {
-		pollType := "creation"
-		if message.PollUpdateMessage != nil {
-			pollType = "vote"
-		}
+	if metadata.PollType != "" {
 		content = append(content, waBinary.Node{
 			Tag: "meta",
 			Attrs: waBinary.Attrs{
-				"polltype": pollType,
+				"polltype": metadata.PollType,
 			},
 		})
 	}
@@ -1117,13 +988,12 @@ func (cli *Client) getMessageContent(
 	if extraParams.additionalNodes != nil {
 		content = append(content, *extraParams.additionalNodes...)
 	}
-
-	if buttonType := getButtonTypeFromMessage(message); buttonType != "" {
+	if metadata.ButtonType != "" {
 		content = append(content, waBinary.Node{
 			Tag: "biz",
 			Content: []waBinary.Node{{
-				Tag:   buttonType,
-				Attrs: getButtonAttributes(message),
+				Tag:   metadata.ButtonType,
+				Attrs: cloneAttrs(metadata.ButtonAttributes),
 			}},
 		})
 	}
@@ -1153,27 +1023,22 @@ func (cli *Client) prepareMessageNode(
 		})
 	}
 
-	msgType := getTypeFromMessage(message)
+	metadata := BuildMessageNodeMetadata(message, MessageNodeMetadataOptions{})
 	encAttrs := waBinary.Attrs{}
 	// Only include encMediaType for 1:1 messages (groups don't have a device-sent message plaintext)
-	if encMediaType := getMediaTypeFromMessage(message); dsmPlaintext != nil && encMediaType != "" {
-		encAttrs["mediatype"] = encMediaType
+	if dsmPlaintext != nil && metadata.MediaType != "" {
+		encAttrs["mediatype"] = metadata.MediaType
 	}
-	attrs := waBinary.Attrs{
-		"id":   id,
-		"type": msgType,
-		"to":   to,
-	}
+	attrs := applyMessageNodeMetadata(waBinary.Attrs{
+		"id": id,
+		"to": to,
+	}, metadata)
 	// TODO this is a very hacky hack for announcement group messages, why is it pn anyway?
 	if extraParams.addressingMode != "" {
 		attrs["addressing_mode"] = string(extraParams.addressingMode)
 	}
-	if editAttr := getEditAttribute(message); editAttr != "" {
-		attrs["edit"] = string(editAttr)
-		encAttrs["decrypt-fail"] = string(events.DecryptFailHide)
-	}
-	if msgType == "reaction" || message.GetPollUpdateMessage() != nil {
-		encAttrs["decrypt-fail"] = string(events.DecryptFailHide)
+	if metadata.DecryptFail != "" {
+		encAttrs["decrypt-fail"] = string(metadata.DecryptFail)
 	}
 
 	start = time.Now()
@@ -1192,7 +1057,7 @@ func (cli *Client) prepareMessageNode(
 		Tag:   "message",
 		Attrs: attrs,
 		Content: cli.getMessageContent(
-			participantNode, message, attrs, includeIdentity, extraParams,
+			participantNode, metadata, includeIdentity, extraParams,
 		),
 	}, allDevices, nil
 }
@@ -1224,10 +1089,21 @@ func marshalMessage(to types.JID, message *waE2E.Message) (plaintext, dsmPlainte
 	return
 }
 
-func (cli *Client) makeDeviceIdentityNode() waBinary.Node {
+func (cli *Client) marshalStoredDeviceIdentity() ([]byte, error) {
+	if cli == nil || cli.Store == nil || cli.Store.Account == nil {
+		return nil, ErrNoDeviceIdentity
+	}
 	deviceIdentity, err := proto.Marshal(cli.Store.Account)
 	if err != nil {
-		panic(fmt.Errorf("failed to marshal device identity: %w", err))
+		return nil, fmt.Errorf("failed to marshal device identity: %w", err)
+	}
+	return deviceIdentity, nil
+}
+
+func (cli *Client) makeDeviceIdentityNode() waBinary.Node {
+	deviceIdentity, err := cli.marshalStoredDeviceIdentity()
+	if err != nil {
+		panic(err)
 	}
 	return waBinary.Node{
 		Tag:     "device-identity",

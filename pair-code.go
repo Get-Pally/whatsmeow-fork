@@ -54,6 +54,21 @@ type phoneLinkingCache struct {
 	pairingRef  string
 }
 
+// RelayPhonePairRequest contains the code-pair inputs that require external private-key
+// ownership in transport-only relay mode.
+type RelayPhonePairRequest struct {
+	LinkingCode                  string
+	CompanionEphemeralPrivateKey []byte
+	WrappedPrimaryEphemeralPub   []byte
+	PrimaryIdentityPub           []byte
+}
+
+// RelayPhonePairResponse contains the transport-safe result of external phone-pair crypto.
+type RelayPhonePairResponse struct {
+	WrappedKeyBundle []byte
+	AdvSecret        []byte
+}
+
 func generateCompanionEphemeralKey() (ephemeralKeyPair *keys.KeyPair, ephemeralKey []byte, encodedLinkingCode string) {
 	ephemeralKeyPair = keys.NewKeyPair()
 	salt := random.Bytes(32)
@@ -177,6 +192,9 @@ func (cli *Client) handleCodePairNotification(ctx context.Context, parentNode *w
 			In:  "notification",
 		}
 	}
+	if cli.IsRelayTransportMode() {
+		return cli.handleRelayCodePairNotification(ctx, linkCache, linkCodePairingRef, wrappedPrimaryEphemeralPub, primaryIdentityPub)
+	}
 
 	advSecretRandom := random.Bytes(32)
 	keyBundleSalt := random.Bytes(32)
@@ -240,4 +258,55 @@ func (cli *Client) handleCodePairNotification(ctx context.Context, parentNode *w
 		}},
 	})
 	return err
+}
+
+func (cli *Client) handleRelayCodePairNotification(
+	ctx context.Context,
+	linkCache *phoneLinkingCache,
+	linkCodePairingRef, wrappedPrimaryEphemeralPub, primaryIdentityPub []byte,
+) error {
+	if cli.RelayPhonePairCallback == nil {
+		return ErrRelayTransportRequiresPhonePairCallback
+	} else if cli.Store == nil || cli.Store.IdentityKey == nil || cli.Store.IdentityKey.Pub == nil {
+		return ErrNoDeviceIdentity
+	}
+
+	resp, err := cli.RelayPhonePairCallback(ctx, &RelayPhonePairRequest{
+		LinkingCode:                  linkCache.linkingCode,
+		CompanionEphemeralPrivateKey: append([]byte(nil), linkCache.keyPair.Priv[:]...),
+		WrappedPrimaryEphemeralPub:   append([]byte(nil), wrappedPrimaryEphemeralPub...),
+		PrimaryIdentityPub:           append([]byte(nil), primaryIdentityPub...),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to build relay phone-pair response: %w", err)
+	} else if resp == nil {
+		return fmt.Errorf("missing relay phone-pair response")
+	} else if len(resp.AdvSecret) != 32 {
+		return fmt.Errorf("relay phone-pair response adv secret must be 32 bytes, got %d", len(resp.AdvSecret))
+	} else if len(resp.WrappedKeyBundle) == 0 {
+		return fmt.Errorf("relay phone-pair response wrapped key bundle is empty")
+	}
+
+	cli.Store.AdvSecretKey = append([]byte(nil), resp.AdvSecret...)
+	_, err = cli.sendIQ(ctx, infoQuery{
+		Namespace: "md",
+		Type:      iqSet,
+		To:        types.ServerJID,
+		Content: []waBinary.Node{{
+			Tag: "link_code_companion_reg",
+			Attrs: waBinary.Attrs{
+				"jid":   linkCache.jid,
+				"stage": "companion_finish",
+			},
+			Content: []waBinary.Node{
+				{Tag: "link_code_pairing_wrapped_key_bundle", Content: resp.WrappedKeyBundle},
+				{Tag: "companion_identity_public", Content: cli.Store.IdentityKey.Pub[:]},
+				{Tag: "link_code_pairing_ref", Content: linkCodePairingRef},
+			},
+		}},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to send relay phone-pair finish IQ: %w", err)
+	}
+	return nil
 }

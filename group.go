@@ -60,7 +60,7 @@ func (cli *Client) CreateGroup(ctx context.Context, req ReqCreateGroup) (*types.
 			Tag:   "participant",
 			Attrs: waBinary.Attrs{"jid": participant},
 		}
-		pt, err := cli.Store.PrivacyTokens.GetPrivacyToken(ctx, participant)
+		pt, err := cli.Store.Companion.PrivacyTokens.GetPrivacyToken(ctx, participant)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get privacy token for participant %s: %v", participant, err)
 		} else if pt != nil {
@@ -744,6 +744,14 @@ func (cli *Client) parseGroupNode(groupNode *waBinary.Node) (*types.GroupInfo, e
 		case "member_add_mode":
 			modeBytes, _ := child.Content.([]byte)
 			group.MemberAddMode = types.GroupMemberAddMode(modeBytes)
+		case "member_link_mode":
+			modeBytes, _ := child.Content.([]byte)
+			group.MemberLinkMode = types.GroupMemberLinkMode(modeBytes)
+		case "member_share_group_history_mode":
+			modeBytes, _ := child.Content.([]byte)
+			group.MemberShareGroupHistoryMode = types.GroupMemberShareGroupHistoryMode(modeBytes)
+		case "allow_non_admin_sub_group_creation":
+			group.AllowNonAdminSubGroupCreation = true
 		case "linked_parent":
 			group.LinkedParentJID = childAG.JID("jid")
 		case "default_sub_group":
@@ -753,6 +761,12 @@ func (cli *Client) parseGroupNode(groupNode *waBinary.Node) (*types.GroupInfo, e
 			group.DefaultMembershipApprovalMode = childAG.OptionalString("default_membership_approval_mode")
 		case "incognito":
 			group.IsIncognito = true
+		case "hidden_group":
+			group.IsHiddenGroup = true
+		case "limit_sharing_enabled":
+			group.IsLimitSharingEnabled = true
+		case "general_chat":
+			group.IsGeneralChat = true
 		case "membership_approval_mode":
 			group.IsJoinApprovalRequired = true
 		case "suspended":
@@ -955,6 +969,23 @@ func (cli *Client) parseGroupChange(node *waBinary.Node) (*events.GroupInfo, []s
 			evt.MembershipApprovalMode = &types.GroupMembershipApprovalMode{
 				IsJoinApprovalRequired: true,
 			}
+		case "member_link_mode":
+			modeBytes, _ := child.Content.([]byte)
+			mode := types.GroupMemberLinkMode(modeBytes)
+			evt.MemberLinkMode = &mode
+		case "member_share_group_history_mode":
+			modeBytes, _ := child.Content.([]byte)
+			mode := types.GroupMemberShareGroupHistoryMode(modeBytes)
+			evt.MemberShareGroupHistoryMode = &mode
+		case "allow_non_admin_sub_group_creation":
+			allow := true
+			evt.AllowNonAdminSubGroupCreation = &allow
+		case "hidden_group":
+			evt.HiddenGroup = &types.GroupHidden{IsHiddenGroup: true}
+		case "limit_sharing_enabled":
+			evt.LimitSharing = &types.GroupLimitSharing{IsLimitSharingEnabled: true}
+		case "general_chat":
+			evt.GeneralChat = &types.GroupGeneralChat{IsGeneralChat: true}
 		case "suspended":
 			evt.Suspended = true
 		case "unsuspended":

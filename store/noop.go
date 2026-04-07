@@ -20,29 +20,35 @@ type NoopStore struct {
 }
 
 var nilStore = &NoopStore{Error: errors.New("store is nil")}
+var ErrTransportOnlyStoreOperation = errors.New("transport-only device store does not support local signal or appstate state")
 var nilKey = &keys.KeyPair{Priv: &[32]byte{}, Pub: &[32]byte{}}
 var NoopDevice = &Device{
 	ID:          &types.EmptyJID,
 	NoiseKey:    nilKey,
 	IdentityKey: nilKey,
-
-	Identities:    nilStore,
-	Sessions:      nilStore,
-	PreKeys:       nilStore,
-	SenderKeys:    nilStore,
-	AppStateKeys:  nilStore,
-	AppState:      nilStore,
-	Contacts:      nilStore,
-	ChatSettings:  nilStore,
-	MsgSecrets:    nilStore,
-	PrivacyTokens: nilStore,
-	EventBuffer:   nilStore,
-	LIDs:          nilStore,
-	Container:     nilStore,
+	Companion: CompanionStores{
+		Identities:    nilStore,
+		Sessions:      nilStore,
+		SenderKeys:    nilStore,
+		AppStateKeys:  nilStore,
+		AppState:      nilStore,
+		MsgSecrets:    nilStore,
+		PrivacyTokens: nilStore,
+	},
+	PreKeys:      nilStore,
+	Contacts:     nilStore,
+	ChatSettings: nilStore,
+	EventBuffer:  nilStore,
+	LIDs:         nilStore,
+	Container:    nilStore,
 }
 
 var _ AllStores = (*NoopStore)(nil)
 var _ DeviceContainer = (*NoopStore)(nil)
+
+func NewTransportOnlyNoopStore() *NoopStore {
+	return &NoopStore{Error: ErrTransportOnlyStoreOperation}
+}
 
 func (n *NoopStore) PutIdentity(ctx context.Context, address string, key [32]byte) error {
 	return n.Error

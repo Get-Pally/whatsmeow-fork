@@ -11,11 +11,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	mathRand "math/rand/v2"
 
 	"github.com/google/uuid"
 	"go.mau.fi/util/dbutil"
-	"go.mau.fi/util/random"
 
 	"go.mau.fi/whatsmeow/proto/waAdv"
 	"go.mau.fi/whatsmeow/store"
@@ -112,7 +110,7 @@ func (c *Container) Upgrade(ctx context.Context) error {
 }
 
 const getAllDevicesQuery = `
-SELECT jid, lid, registration_id, noise_key, identity_key,
+SELECT jid, lid, registration_id, transport_only, noise_key, identity_key,
        signed_pre_key, signed_pre_key_id, signed_pre_key_sig,
        adv_key, adv_details, adv_account_sig, adv_account_sig_key, adv_device_sig,
        platform, business_name, push_name, facebook_uuid, lid_migration_ts
@@ -125,26 +123,46 @@ func (c *Container) scanDevice(row dbutil.Scannable) (*store.Device, error) {
 	var device store.Device
 	device.Log = c.log
 	device.SignedPreKey = &keys.PreKey{}
-	var noisePriv, identityPriv, preKeyPriv, preKeySig []byte
+	var noisePriv, identityData, preKeyData, preKeySig []byte
 	var account waAdv.ADVSignedDeviceIdentity
 	var fbUUID uuid.NullUUID
 
 	err := row.Scan(
-		&device.ID, &device.LID, &device.RegistrationID, &noisePriv, &identityPriv,
-		&preKeyPriv, &device.SignedPreKey.KeyID, &preKeySig,
+		&device.ID, &device.LID, &device.RegistrationID, &device.TransportOnly, &noisePriv, &identityData,
+		&preKeyData, &device.SignedPreKey.KeyID, &preKeySig,
 		&device.AdvSecretKey, &account.Details, &account.AccountSignature, &account.AccountSignatureKey, &account.DeviceSignature,
 		&device.Platform, &device.BusinessName, &device.PushName, &fbUUID, &device.LIDMigrationTimestamp)
 	if err != nil {
 		return nil, fmt.Errorf("failed to scan session: %w", err)
-	} else if len(noisePriv) != 32 || len(identityPriv) != 32 || len(preKeyPriv) != 32 || len(preKeySig) != 64 {
+	} else if len(noisePriv) != 32 || len(identityData) != 32 || len(preKeyData) != 32 || len(preKeySig) != 64 {
 		return nil, ErrInvalidLength
 	}
 
 	device.NoiseKey = keys.NewKeyPairFromPrivateKey(*(*[32]byte)(noisePriv))
-	device.IdentityKey = keys.NewKeyPairFromPrivateKey(*(*[32]byte)(identityPriv))
-	device.SignedPreKey.KeyPair = *keys.NewKeyPairFromPrivateKey(*(*[32]byte)(preKeyPriv))
-	device.SignedPreKey.Signature = (*[64]byte)(preKeySig)
-	device.Account = &account
+	if device.TransportOnly {
+		if !isAllZeroBytes(identityData) {
+			device.IdentityKey = &keys.KeyPair{Pub: (*[32]byte)(identityData)}
+		}
+		if !isAllZeroBytes(preKeyData) || !isAllZeroBytes(preKeySig) || device.SignedPreKey.KeyID != 0 {
+			device.SignedPreKey.KeyPair = keys.KeyPair{Pub: (*[32]byte)(preKeyData)}
+			device.SignedPreKey.Signature = (*[64]byte)(preKeySig)
+		} else {
+			device.SignedPreKey = nil
+		}
+		if isAllZeroBytes(device.AdvSecretKey) {
+			device.AdvSecretKey = nil
+		}
+		if len(account.Details) == 0 && isAllZeroBytes(account.AccountSignature) && isAllZeroBytes(account.AccountSignatureKey) && isAllZeroBytes(account.DeviceSignature) {
+			device.Account = nil
+		} else {
+			device.Account = &account
+		}
+	} else {
+		device.IdentityKey = keys.NewKeyPairFromPrivateKey(*(*[32]byte)(identityData))
+		device.SignedPreKey.KeyPair = *keys.NewKeyPairFromPrivateKey(*(*[32]byte)(preKeyData))
+		device.SignedPreKey.Signature = (*[64]byte)(preKeySig)
+		device.Account = &account
+	}
 	device.FacebookUUID = fbUUID.UUID
 
 	c.initializeDevice(&device)
@@ -199,37 +217,53 @@ func (c *Container) GetDevice(ctx context.Context, jid types.JID) (*store.Device
 
 const (
 	insertDeviceQuery = `
-		INSERT INTO whatsmeow_device (jid, lid, registration_id, noise_key, identity_key,
-									  signed_pre_key, signed_pre_key_id, signed_pre_key_sig,
-									  adv_key, adv_details, adv_account_sig, adv_account_sig_key, adv_device_sig,
-									  platform, business_name, push_name, facebook_uuid, lid_migration_ts)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
-		ON CONFLICT (jid) DO UPDATE
-			SET lid=excluded.lid,
-				platform=excluded.platform,
-				business_name=excluded.business_name,
-				push_name=excluded.push_name,
+			INSERT INTO whatsmeow_device (jid, lid, registration_id, transport_only, noise_key, identity_key,
+										  signed_pre_key, signed_pre_key_id, signed_pre_key_sig,
+										  adv_key, adv_details, adv_account_sig, adv_account_sig_key, adv_device_sig,
+										  platform, business_name, push_name, facebook_uuid, lid_migration_ts)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+			ON CONFLICT (jid) DO UPDATE
+				SET lid=excluded.lid,
+					registration_id=excluded.registration_id,
+					transport_only=excluded.transport_only,
+					identity_key=excluded.identity_key,
+					signed_pre_key=excluded.signed_pre_key,
+					signed_pre_key_id=excluded.signed_pre_key_id,
+					signed_pre_key_sig=excluded.signed_pre_key_sig,
+					adv_key=excluded.adv_key,
+					adv_details=excluded.adv_details,
+					adv_account_sig=excluded.adv_account_sig,
+					adv_account_sig_key=excluded.adv_account_sig_key,
+					adv_device_sig=excluded.adv_device_sig,
+					platform=excluded.platform,
+					business_name=excluded.business_name,
+					push_name=excluded.push_name,
 				lid_migration_ts=excluded.lid_migration_ts
 	`
-	deleteDeviceQuery = `DELETE FROM whatsmeow_device WHERE jid=$1`
+	deleteDeviceQuery        = `DELETE FROM whatsmeow_device WHERE jid=$1`
+	deletePrivacyTokensQuery = `DELETE FROM whatsmeow_privacy_tokens WHERE our_jid=$1`
+	countDevicesQuery        = `SELECT COUNT(*) FROM whatsmeow_device`
 )
 
-// NewDevice creates a new device in this database.
+// NewDevice creates a new transport-only device for relay mode.
+// Only generates a noise key for the WhatsApp transport layer.
+// The Signal identity key and registration ID come from the app via ApplyToDevice.
 //
 // No data is actually stored before Save is called. However, the pairing process will automatically
 // call Save after a successful pairing, so you most likely don't need to call it yourself.
 func (c *Container) NewDevice() *store.Device {
-	device := &store.Device{
-		Log:       c.log,
-		Container: c,
-
-		NoiseKey:       keys.NewKeyPair(),
-		IdentityKey:    keys.NewKeyPair(),
-		RegistrationID: mathRand.Uint32(),
-		AdvSecretKey:   random.Bytes(32),
+	return &store.Device{
+		Log:           c.log,
+		Container:     c,
+		NoiseKey:      keys.NewKeyPair(),
+		TransportOnly: true,
 	}
-	device.SignedPreKey = device.IdentityKey.CreateSignedPreKey(1)
-	return device
+}
+
+// NewTransportOnlyDevice is an alias for NewDevice. All devices are transport-only
+// in this fork — the app owns Signal identity keys and registration IDs.
+func (c *Container) NewTransportOnlyDevice() *store.Device {
+	return c.NewDevice()
 }
 
 // ErrDeviceIDMustBeSet is the error returned by PutDevice if you try to save a device before knowing its JID.
@@ -249,10 +283,50 @@ func (c *Container) PutDevice(ctx context.Context, device *store.Device) error {
 	if device.ID == nil {
 		return ErrDeviceIDMustBeSet
 	}
+	registrationID := device.RegistrationID
+	identityBytes := make([]byte, 32)
+	signedPreKeyBytes := make([]byte, 32)
+	signedPreKeyID := uint32(0)
+	signedPreKeySig := make([]byte, 64)
+	// Persist the public identity key (not private) — the app owns the private key.
+	if device.IdentityKey != nil && device.IdentityKey.Pub != nil {
+		identityBytes = device.IdentityKey.Pub[:]
+		if device.Log != nil {
+			device.Log.Infof("[PUTDEVICE] Saving identity_key=%x reg_id=%d jid=%s", identityBytes[:8], registrationID, device.ID)
+		}
+	} else if device.Log != nil {
+		device.Log.Warnf("[PUTDEVICE] Saving with NIL identity key jid=%s", device.ID)
+	}
+	if device.SignedPreKey != nil {
+		if device.SignedPreKey.Pub != nil {
+			signedPreKeyBytes = device.SignedPreKey.Pub[:]
+		}
+		signedPreKeyID = device.SignedPreKey.KeyID
+		if device.SignedPreKey.Signature != nil {
+			signedPreKeySig = device.SignedPreKey.Signature[:]
+		}
+	}
+	advKey := make([]byte, 32)
+	advDetails := []byte{}
+	advAccountSig := make([]byte, 64)
+	advAccountSigKey := make([]byte, 32)
+	advDeviceSig := make([]byte, 64)
+	if device.Account != nil {
+		advDetails = device.Account.Details
+		if len(device.Account.AccountSignature) == 64 {
+			advAccountSig = device.Account.AccountSignature
+		}
+		if len(device.Account.AccountSignatureKey) == 32 {
+			advAccountSigKey = device.Account.AccountSignatureKey
+		}
+		if len(device.Account.DeviceSignature) == 64 {
+			advDeviceSig = device.Account.DeviceSignature
+		}
+	}
 	_, err := c.db.Exec(ctx, insertDeviceQuery,
-		device.ID, device.LID, device.RegistrationID, device.NoiseKey.Priv[:], device.IdentityKey.Priv[:],
-		device.SignedPreKey.Priv[:], device.SignedPreKey.KeyID, device.SignedPreKey.Signature[:],
-		device.AdvSecretKey, device.Account.Details, device.Account.AccountSignature, device.Account.AccountSignatureKey, device.Account.DeviceSignature,
+		device.ID, device.LID, registrationID, device.TransportOnly, device.NoiseKey.Priv[:], identityBytes,
+		signedPreKeyBytes, signedPreKeyID, signedPreKeySig,
+		advKey, advDetails, advAccountSig, advAccountSigKey, advDeviceSig,
 		device.Platform, device.BusinessName, device.PushName, uuid.NullUUID{UUID: device.FacebookUUID, Valid: device.FacebookUUID != uuid.Nil},
 		device.LIDMigrationTimestamp,
 	)
@@ -263,19 +337,43 @@ func (c *Container) PutDevice(ctx context.Context, device *store.Device) error {
 	return err
 }
 
+func isAllZeroBytes(data []byte) bool {
+	for _, b := range data {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func (c *Container) initializeDevice(device *store.Device) {
 	innerStore := NewSQLStore(c, *device.ID)
-	device.Identities = innerStore
-	device.Sessions = innerStore
-	device.PreKeys = innerStore
-	device.SenderKeys = innerStore
-	device.AppStateKeys = innerStore
-	device.AppState = innerStore
 	device.Contacts = innerStore
 	device.ChatSettings = innerStore
-	device.MsgSecrets = innerStore
-	device.PrivacyTokens = innerStore
-	device.EventBuffer = innerStore
+	if device.TransportOnly {
+		transportOnlyStore := store.NewTransportOnlyNoopStore()
+		device.Companion.Identities = transportOnlyStore
+		device.Companion.Sessions = transportOnlyStore
+		if device.PreKeys == nil {
+			device.PreKeys = transportOnlyStore
+		}
+		device.Companion.SenderKeys = transportOnlyStore
+		device.Companion.AppStateKeys = transportOnlyStore
+		device.Companion.AppState = transportOnlyStore
+		device.Companion.MsgSecrets = transportOnlyStore
+		device.Companion.PrivacyTokens = transportOnlyStore
+		device.EventBuffer = transportOnlyStore
+	} else {
+		device.Companion.Identities = innerStore
+		device.Companion.Sessions = innerStore
+		device.PreKeys = innerStore
+		device.Companion.SenderKeys = innerStore
+		device.Companion.AppStateKeys = innerStore
+		device.Companion.AppState = innerStore
+		device.Companion.MsgSecrets = innerStore
+		device.Companion.PrivacyTokens = innerStore
+		device.EventBuffer = innerStore
+	}
 	device.LIDs = c.LIDMap
 	device.Container = c
 	device.Initialized = true
@@ -286,6 +384,25 @@ func (c *Container) DeleteDevice(ctx context.Context, store *store.Device) error
 	if store.ID == nil {
 		return ErrDeviceIDMustBeSet
 	}
-	_, err := c.db.Exec(ctx, deleteDeviceQuery, store.ID)
-	return err
+	return c.db.DoTxn(ctx, nil, func(ctx context.Context) error {
+		_, err := c.db.Exec(ctx, deletePrivacyTokensQuery, store.ID)
+		if err != nil {
+			return err
+		}
+
+		_, err = c.db.Exec(ctx, deleteDeviceQuery, store.ID)
+		if err != nil {
+			return err
+		}
+
+		var remainingDevices int
+		err = c.db.QueryRow(ctx, countDevicesQuery).Scan(&remainingDevices)
+		if err != nil {
+			return err
+		}
+		if remainingDevices == 0 && c.LIDMap != nil {
+			return c.LIDMap.DeleteAll(ctx)
+		}
+		return nil
+	})
 }

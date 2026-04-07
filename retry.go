@@ -138,6 +138,14 @@ func (cli *Client) handleRetryReceipt(ctx context.Context, receipt *events.Recei
 	if !ag.OK() {
 		return ag.Error()
 	}
+	if cli.IsRelayTransportMode() {
+		if cli.RelayRetryReceiptCallback == nil {
+			return ErrRelayTransportRequiresRetryCallback
+		}
+		cli.Log.Infof("Relay mode: forwarding retry receipt for %s/%s to external client (retry #%d)", receipt.Chat, messageID, retryCount)
+		cli.RelayRetryReceiptCallback(ctx, receipt, retryCount, node)
+		return nil
+	}
 	msg, err := cli.getMessageForRetry(ctx, receipt, messageID)
 	if err != nil {
 		return err
@@ -243,9 +251,14 @@ func (cli *Client) handleRetryReceipt(ctx context.Context, receipt *events.Recei
 	}
 	encAttrs := waBinary.Attrs{}
 	var msgAttrs messageAttrs
+	var metadata MessageNodeMetadata
 	if msg.wa != nil {
-		msgAttrs.MediaType = getMediaTypeFromMessage(msg.wa)
-		msgAttrs.Type = getTypeFromMessage(msg.wa)
+		metadata = BuildMessageNodeMetadata(msg.wa, MessageNodeMetadataOptions{})
+		msgAttrs.MediaType = metadata.MediaType
+		msgAttrs.Type = metadata.Type
+		msgAttrs.Edit = metadata.Edit
+		msgAttrs.DecryptFail = metadata.DecryptFail
+		msgAttrs.PollType = metadata.PollType
 	} else if fbConsumerMsg != nil {
 		msgAttrs = getAttrsFromFBMessage(fbConsumerMsg)
 	} else {
@@ -253,6 +266,9 @@ func (cli *Client) handleRetryReceipt(ctx context.Context, receipt *events.Recei
 	}
 	if msgAttrs.MediaType != "" {
 		encAttrs["mediatype"] = msgAttrs.MediaType
+	}
+	if msgAttrs.DecryptFail != "" {
+		encAttrs["decrypt-fail"] = string(msgAttrs.DecryptFail)
 	}
 	var encrypted *waBinary.Node
 	var includeDeviceIdentity bool
@@ -283,10 +299,14 @@ func (cli *Client) handleRetryReceipt(ctx context.Context, receipt *events.Recei
 	encrypted.Attrs["count"] = retryCount
 
 	attrs := waBinary.Attrs{
-		"to":   node.Attrs["from"],
-		"type": msgAttrs.Type,
-		"id":   messageID,
-		"t":    timestamp.Unix(),
+		"to": node.Attrs["from"],
+		"id": messageID,
+		"t":  timestamp.Unix(),
+	}
+	if msg.wa != nil {
+		attrs = applyMessageNodeMetadata(attrs, metadata)
+	} else {
+		attrs["type"] = msgAttrs.Type
 	}
 	if !receipt.IsGroup {
 		attrs["device_fanout"] = false
@@ -297,13 +317,13 @@ func (cli *Client) handleRetryReceipt(ctx context.Context, receipt *events.Recei
 	if recipient, ok := node.Attrs["recipient"]; ok {
 		attrs["recipient"] = recipient
 	}
-	if edit, ok := node.Attrs["edit"]; ok {
+	if edit, ok := node.Attrs["edit"]; ok && attrs["edit"] == nil {
 		attrs["edit"] = edit
 	}
 	var content []waBinary.Node
 	if msg.wa != nil {
 		content = cli.getMessageContent(
-			*encrypted, msg.wa, attrs, includeDeviceIdentity, nodeExtraParams{},
+			*encrypted, metadata, includeDeviceIdentity, nodeExtraParams{},
 		)
 	} else {
 		content = []waBinary.Node{
@@ -437,9 +457,25 @@ func (cli *Client) sendRetryReceipt(ctx context.Context, node *waBinary.Node, in
 		},
 	}
 	if retryCount > 1 || forceIncludeIdentity {
-		if key, err := cli.Store.PreKeys.GenOnePreKey(ctx); err != nil {
+		if cli.Store.PreKeys == nil {
+			// Relay mode: PreKeys store is nil because the external client owns one-time pre-keys.
+			if deviceIdentity, err := cli.marshalStoredDeviceIdentity(); err != nil {
+				cli.Log.Errorf("Failed to marshal account info for relay retry receipt: %v", err)
+			} else {
+				keysContent := []waBinary.Node{
+					{Tag: "type", Content: []byte{ecc.DjbType}},
+					{Tag: "identity", Content: cli.Store.IdentityKey.Pub[:]},
+					preKeyToNode(cli.Store.SignedPreKey),
+					{Tag: "device-identity", Content: deviceIdentity},
+				}
+				payload.Content = append(payload.GetChildren(), waBinary.Node{
+					Tag:     "keys",
+					Content: keysContent,
+				})
+			}
+		} else if key, err := cli.Store.PreKeys.GenOnePreKey(ctx); err != nil {
 			cli.Log.Errorf("Failed to get prekey for retry receipt: %v", err)
-		} else if deviceIdentity, err := proto.Marshal(cli.Store.Account); err != nil {
+		} else if deviceIdentity, err := cli.marshalStoredDeviceIdentity(); err != nil {
 			cli.Log.Errorf("Failed to marshal account info: %v", err)
 			return
 		} else {

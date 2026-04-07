@@ -17,6 +17,7 @@ import (
 // Miscellaneous errors
 var (
 	ErrClientIsNil     = errors.New("client is nil")
+	ErrDeviceStoreNil  = errors.New("device store is nil")
 	ErrNoSession       = errors.New("can't encrypt message for device: no signal session established")
 	ErrIQTimedOut      = errors.New("info query timed out")
 	ErrNotConnected    = errors.New("websocket not connected")
@@ -33,9 +34,23 @@ var (
 
 	ErrNoPushName = errors.New("can't send presence without PushName set")
 
-	ErrNoPrivacyToken = errors.New("no privacy token stored")
+	ErrNoPrivacyToken   = errors.New("no privacy token stored")
+	ErrNoDeviceIdentity = errors.New("no device identity stored")
+	ErrNoSignedPreKey   = errors.New("no signed pre-key stored")
+	ErrNoADVSecret      = errors.New("no adv secret stored")
 
-	ErrAppStateUpdate = errors.New("server returned error updating app state")
+	ErrRelayTransportRequiresPreEncryptedSend     = errors.New("relay transport mode requires pre-encrypted relay send APIs")
+	ErrRelayTransportRequiresTransportOnlyStore   = errors.New("relay transport mode requires a transport-only device store with no private Signal keys")
+	ErrRelayTransportRequiresPairSuccessCallback  = errors.New("relay transport mode requires a pair-success callback during linking")
+	ErrRelayTransportRequiresPhonePairCallback    = errors.New("relay transport mode requires a phone-pair callback during code linking")
+	ErrRelayTransportRequiresMessageCallback      = errors.New("relay transport mode requires an encrypted-message relay callback")
+	ErrRelayTransportRequiresSKDMCallback         = errors.New("relay transport mode requires a sender-key-distribution relay callback")
+	ErrRelayTransportRequiresNotificationCallback = errors.New("relay transport mode requires a transport-notification relay callback")
+	ErrRelayTransportRequiresRetryCallback        = errors.New("relay transport mode requires a retry-receipt relay callback")
+
+	ErrAppStateUpdate             = errors.New("server returned error updating app state")
+	ErrRelayTransportOwnsAppState = errors.New("relay transport mode delegates app state to the external client")
+	ErrRelayTransportOwnsHistory  = errors.New("relay transport mode delegates history sync to the external client")
 )
 
 // Errors that happen while confirming device pairing

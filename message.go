@@ -61,6 +61,24 @@ func (cli *Client) handleEncryptedMessage(ctx context.Context, node *waBinary.No
 			defer cli.maybeDeferredAck(ctx, node)(&cancelled)
 			cancelled = cli.handlePlaintextMessage(ctx, info, node)
 		} else {
+			if cli.IsRelayTransportMode() {
+				if cli.RelayMessageCallback == nil {
+					cli.Log.Errorf("Relay transport mode received encrypted message %s without a relay callback; refusing local decryption", info.ID)
+					return
+				} else if cli.RelayMessageCallback(ctx, info, node) {
+					cli.Log.Debugf("Message intercepted by relay callback, skipping decryption")
+					// Protocol receipts (hist_sync, peer_msg) are NOT sent here.
+					// The relay backend controls their timing:
+					//   - peer_msg: sent after the ciphertext is durably queued
+					//   - hist_sync: sent only after the app confirms the message
+					//     was a history sync notification (via process results)
+					// This avoids (a) spurious hist_sync receipts for non-history
+					// peer messages and (b) sending receipts before durable storage.
+					return
+				}
+				cli.Log.Errorf("Relay transport callback declined encrypted message %s; refusing local decryption fallback", info.ID)
+				return
+			}
 			cli.decryptMessages(ctx, info, node)
 		}
 	}
@@ -289,7 +307,7 @@ func (cli *Client) handlePlaintextMessage(ctx context.Context, info *types.Messa
 }
 
 func (cli *Client) migrateSessionStore(ctx context.Context, pn, lid types.JID) {
-	err := cli.Store.Sessions.MigratePNToLID(ctx, pn, lid)
+	err := cli.Store.Companion.Sessions.MigratePNToLID(ctx, pn, lid)
 	if err != nil {
 		cli.Log.Errorf("Failed to migrate signal store from %s to %s: %v", pn, lid, err)
 	}
@@ -362,7 +380,7 @@ func (cli *Client) decryptMessages(ctx context.Context, info *types.MessageInfo,
 			}
 			var msMsg waE2E.MessageSecretMessage
 			var messageSecret []byte
-			if messageSecret, _, err = cli.Store.MsgSecrets.GetMessageSecret(ctx, info.Chat, targetSenderJID, info.MsgMetaInfo.TargetID); err != nil {
+			if messageSecret, _, err = cli.Store.Companion.MsgSecrets.GetMessageSecret(ctx, info.Chat, targetSenderJID, info.MsgMetaInfo.TargetID); err != nil {
 				err = fmt.Errorf("failed to get message secret for %s: %v", info.MsgMetaInfo.TargetID, err)
 			} else if messageSecret == nil {
 				err = fmt.Errorf("message secret for %s not found", info.MsgMetaInfo.TargetID)
@@ -470,11 +488,11 @@ func (cli *Client) decryptMessages(ctx context.Context, info *types.MessageInfo,
 }
 
 func (cli *Client) clearUntrustedIdentity(ctx context.Context, target types.JID) error {
-	err := cli.Store.Identities.DeleteIdentity(ctx, target.SignalAddress().String())
+	err := cli.Store.Companion.Identities.DeleteIdentity(ctx, target.SignalAddress().String())
 	if err != nil {
 		return fmt.Errorf("failed to delete identity: %w", err)
 	}
-	err = cli.Store.Sessions.DeleteSession(ctx, target.SignalAddress().String())
+	err = cli.Store.Companion.Sessions.DeleteSession(ctx, target.SignalAddress().String())
 	if err != nil {
 		return fmt.Errorf("failed to delete session: %w", err)
 	}
@@ -643,6 +661,20 @@ func padMessage(plaintext []byte) []byte {
 }
 
 func (cli *Client) handleSenderKeyDistributionMessage(ctx context.Context, chat, from types.JID, axolotlSKDM []byte) {
+	// In relay mode with external sender key management, forward SKDM to external client
+	// instead of processing internally. This enables true E2EE where the external client
+	// owns all keys and performs all decryption.
+	if cli.IsRelayTransportMode() {
+		if cli.RelaySkdmCallback == nil {
+			cli.Log.Errorf("Relay transport mode received SKDM from %s for %s without a relay callback; refusing local sender-key processing", from, chat)
+			return
+		}
+		cli.RelaySkdmCallback(ctx, chat, from, axolotlSKDM)
+		cli.Log.Debugf("Forwarded SKDM from %s for group %s to relay callback", from, chat)
+		return
+	}
+
+	// Normal mode: process SKDM internally.
 	builder := groups.NewGroupSessionBuilder(cli.Store, pbSerializer)
 	senderKeyName := protocol.NewSenderKeyName(chat.String(), from.SignalAddress())
 	sdkMsg, err := protocol.NewSenderKeyDistributionMessageFromBytes(axolotlSKDM, pbSerializer.SenderKeyDistributionMessage)
@@ -659,6 +691,9 @@ func (cli *Client) handleSenderKeyDistributionMessage(ctx context.Context, chat,
 }
 
 func (cli *Client) handleHistorySyncNotificationLoop() {
+	if cli.IsRelayTransportMode() {
+		return
+	}
 	defer func() {
 		cli.historySyncHandlerStarted.Store(false)
 		err := recover()
@@ -694,6 +729,9 @@ func (cli *Client) handleHistorySyncNotificationLoop() {
 // You only need to call this manually if you set [Client.ManualHistorySyncDownload] to true.
 // By default, whatsmeow will call this automatically and dispatch an [events.HistorySync] with the parsed data.
 func (cli *Client) DownloadHistorySync(ctx context.Context, notif *waE2E.HistorySyncNotification, synchronousStorage bool) (*waHistorySync.HistorySync, error) {
+	if cli.IsRelayTransportMode() {
+		return nil, ErrRelayTransportOwnsHistory
+	}
 	var data []byte
 	var err error
 	if notif.InitialHistBootstrapInlinePayload != nil {
@@ -714,6 +752,7 @@ func (cli *Client) DownloadHistorySync(ctx context.Context, notif *waE2E.History
 		if historySync.GetSyncType() == waHistorySync.HistorySync_PUSH_NAME {
 			cli.handleHistoricalPushNames(ctx, historySync.GetPushnames())
 		} else if len(historySync.GetConversations()) > 0 {
+			cli.storeHistoricalConversationMetadata(ctx, historySync.GetConversations())
 			cli.storeHistoricalMessageSecrets(ctx, historySync.GetConversations())
 		}
 		if len(historySync.GetPhoneNumberToLidMappings()) > 0 {
@@ -732,6 +771,10 @@ func (cli *Client) DownloadHistorySync(ctx context.Context, notif *waE2E.History
 }
 
 func (cli *Client) handleAppStateSyncKeyShare(ctx context.Context, keys *waE2E.AppStateSyncKeyShare) {
+	if cli.IsRelayTransportMode() {
+		cli.Log.Debugf("Skipping app state key share in relay transport mode")
+		return
+	}
 	onlyResyncIfNotSynced := true
 
 	cli.Log.Debugf("Got %d new app state keys", len(keys.GetKeys()))
@@ -746,7 +789,7 @@ func (cli *Client) handleAppStateSyncKeyShare(ctx context.Context, keys *waE2E.A
 		if isReRequest {
 			onlyResyncIfNotSynced = false
 		}
-		err = cli.Store.AppStateKeys.PutAppStateSyncKey(ctx, key.GetKeyID().GetKeyID(), store.AppStateSyncKey{
+		err = cli.Store.Companion.AppStateKeys.PutAppStateSyncKey(ctx, key.GetKeyID().GetKeyID(), store.AppStateSyncKey{
 			Data:        key.GetKeyData().GetKeyData(),
 			Fingerprint: marshaledFingerprint,
 			Timestamp:   key.GetKeyData().GetTimestamp(),
@@ -790,6 +833,9 @@ func (cli *Client) handlePlaceholderResendResponse(msg *waE2E.PeerDataOperationR
 
 func (cli *Client) handleProtocolMessage(ctx context.Context, info *types.MessageInfo, msg *waE2E.Message) (ok bool) {
 	ok = true
+	if cli.IsRelayTransportMode() {
+		return true
+	}
 	protoMsg := msg.GetProtocolMessage()
 
 	if !info.IsFromMe {
@@ -857,8 +903,11 @@ func (cli *Client) processProtocolParts(ctx context.Context, info *types.Message
 }
 
 func (cli *Client) storeMessageSecret(ctx context.Context, info *types.MessageInfo, msg *waE2E.Message) {
+	if cli.IsRelayTransportMode() {
+		return
+	}
 	if msgSecret := msg.GetMessageContextInfo().GetMessageSecret(); len(msgSecret) > 0 {
-		err := cli.Store.MsgSecrets.PutMessageSecret(ctx, info.Chat, info.Sender, info.ID, msgSecret)
+		err := cli.Store.Companion.MsgSecrets.PutMessageSecret(ctx, info.Chat, info.Sender, info.ID, msgSecret)
 		if err != nil {
 			cli.Log.Errorf("Failed to store message secret key for %s: %v", info.ID, err)
 		} else {
@@ -868,6 +917,9 @@ func (cli *Client) storeMessageSecret(ctx context.Context, info *types.MessageIn
 }
 
 func (cli *Client) storeHistoricalMessageSecrets(ctx context.Context, conversations []*waHistorySync.Conversation) {
+	if cli.IsRelayTransportMode() {
+		return
+	}
 	var secrets []store.MessageSecretInsert
 	var privacyTokens []store.PrivacyToken
 	ownID := cli.getOwnID().ToNonAD()
@@ -917,7 +969,7 @@ func (cli *Client) storeHistoricalMessageSecrets(ctx context.Context, conversati
 	}
 	if len(secrets) > 0 {
 		cli.Log.Debugf("Storing %d message secret keys in history sync", len(secrets))
-		err := cli.Store.MsgSecrets.PutMessageSecrets(ctx, secrets)
+		err := cli.Store.Companion.MsgSecrets.PutMessageSecrets(ctx, secrets)
 		if err != nil {
 			cli.Log.Errorf("Failed to store message secret keys in history sync: %v", err)
 		} else {
@@ -926,7 +978,7 @@ func (cli *Client) storeHistoricalMessageSecrets(ctx context.Context, conversati
 	}
 	if len(privacyTokens) > 0 {
 		cli.Log.Debugf("Storing %d privacy tokens in history sync", len(privacyTokens))
-		err := cli.Store.PrivacyTokens.PutPrivacyTokens(ctx, privacyTokens...)
+		err := cli.Store.Companion.PrivacyTokens.PutPrivacyTokens(ctx, privacyTokens...)
 		if err != nil {
 			cli.Log.Errorf("Failed to store privacy tokens in history sync: %v", err)
 		} else {

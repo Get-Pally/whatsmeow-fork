@@ -29,6 +29,9 @@ import (
 // FetchAppState fetches updates to the given type of app state. If fullSync is true, the current
 // cached state will be removed and all app state patches will be re-fetched from the server.
 func (cli *Client) FetchAppState(ctx context.Context, name appstate.WAPatchName, fullSync, onlyIfNotSynced bool) error {
+	if cli.IsRelayTransportMode() {
+		return ErrRelayTransportOwnsAppState
+	}
 	eventsToDispatch, err := cli.fetchAppState(ctx, name, fullSync, onlyIfNotSynced)
 	if err != nil {
 		return err
@@ -42,16 +45,18 @@ func (cli *Client) FetchAppState(ctx context.Context, name appstate.WAPatchName,
 func (cli *Client) fetchAppState(ctx context.Context, name appstate.WAPatchName, fullSync, onlyIfNotSynced bool) ([]any, error) {
 	if cli == nil {
 		return nil, ErrClientIsNil
+	} else if cli.appStateProc == nil {
+		return nil, ErrRelayTransportOwnsAppState
 	}
 	cli.appStateSyncLock.Lock()
 	defer cli.appStateSyncLock.Unlock()
 	if fullSync {
-		err := cli.Store.AppState.DeleteAppStateVersion(ctx, string(name))
+		err := cli.Store.Companion.AppState.DeleteAppStateVersion(ctx, string(name))
 		if err != nil {
 			return nil, fmt.Errorf("failed to reset app state %s version: %w", name, err)
 		}
 	}
-	version, hash, err := cli.Store.AppState.GetAppStateVersion(ctx, string(name))
+	version, hash, err := cli.Store.Companion.AppState.GetAppStateVersion(ctx, string(name))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get app state %s version: %w", name, err)
 	}
@@ -101,11 +106,19 @@ func (cli *Client) handleAppStateRecovery(
 	reqID types.MessageID,
 	result []*waE2E.PeerDataOperationRequestResponseMessage_PeerDataOperationResult,
 ) bool {
+	if cli.IsRelayTransportMode() {
+		cli.Log.Debugf("Skipping app state recovery %s in relay transport mode", reqID)
+		return true
+	}
 	if len(result) == 0 || result[0].GetSyncdSnapshotFatalRecoveryResponse() == nil {
 		cli.Log.Warnf("No app state recovery data received for %s", reqID)
 		return true
 	} else if len(result) > 1 {
 		cli.Log.Warnf("Unexpected number of app state recovery results for %s: %d", reqID, len(result))
+	}
+	if cli.appStateProc == nil {
+		cli.Log.Debugf("Skipping app state recovery %s without a local app state processor", reqID)
+		return true
 	}
 	var eventsToDispatch []any
 	eventsToDispatchPtr := &eventsToDispatch
@@ -119,7 +132,7 @@ func (cli *Client) handleAppStateRecovery(
 	}
 	name := appstate.WAPatchName(snapshot.GetCollectionName())
 	version := snapshot.GetVersion().GetVersion()
-	currentVersion, _, err := cli.Store.AppState.GetAppStateVersion(ctx, string(name))
+	currentVersion, _, err := cli.Store.Companion.AppState.GetAppStateVersion(ctx, string(name))
 	if err != nil {
 		cli.Log.Errorf("Failed to get current app state %s version for %s: %v", name, reqID, err)
 		return true
@@ -157,6 +170,9 @@ func (cli *Client) applyAppStatePatches(
 	fullSync bool,
 	eventsToDispatch *[]any,
 ) (appstate.HashState, error) {
+	if cli.appStateProc == nil {
+		return state, ErrRelayTransportOwnsAppState
+	}
 	mutations, newState, err := cli.appStateProc.DecodePatches(ctx, patches, state, true)
 	if err != nil {
 		if errors.Is(err, appstate.ErrKeyNotFound) {
@@ -445,6 +461,9 @@ func (cli *Client) fetchAppStatePatches(ctx context.Context, name appstate.WAPat
 }
 
 func (cli *Client) requestMissingAppStateKeys(ctx context.Context, patches *appstate.PatchList) {
+	if cli.appStateProc == nil {
+		return
+	}
 	cli.appStateKeyRequestsLock.Lock()
 	rawKeyIDs := cli.appStateProc.GetMissingKeyIDs(ctx, patches)
 	filteredKeyIDs := make([][]byte, 0, len(rawKeyIDs))
@@ -493,19 +512,24 @@ func (cli *Client) requestAppStateKeys(ctx context.Context, rawKeyIDs [][]byte) 
 //
 //	cli.SendAppState(ctx, appstate.BuildMute(targetJID, true, 24 * time.Hour))
 func (cli *Client) SendAppState(ctx context.Context, patch appstate.PatchInfo) error {
+	if cli.IsRelayTransportMode() {
+		return ErrRelayTransportOwnsAppState
+	}
 	return cli.sendAppState(ctx, patch, true)
 }
 
 func (cli *Client) sendAppState(ctx context.Context, patch appstate.PatchInfo, allowRetry bool) error {
 	if cli == nil {
 		return ErrClientIsNil
+	} else if cli.appStateProc == nil {
+		return ErrRelayTransportOwnsAppState
 	}
-	version, hash, err := cli.Store.AppState.GetAppStateVersion(ctx, string(patch.Type))
+	version, hash, err := cli.Store.Companion.AppState.GetAppStateVersion(ctx, string(patch.Type))
 	if err != nil {
 		return err
 	}
 	// TODO create new key instead of reusing the primary client's keys
-	latestKeyID, err := cli.Store.AppStateKeys.GetLatestAppStateSyncKeyID(ctx)
+	latestKeyID, err := cli.Store.Companion.AppStateKeys.GetLatestAppStateSyncKeyID(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get latest app state key ID: %w", err)
 	} else if latestKeyID == nil {

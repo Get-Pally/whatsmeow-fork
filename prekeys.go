@@ -18,6 +18,7 @@ import (
 	"go.mau.fi/libsignal/util/optional"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
+	waStore "go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/util/keys"
 )
@@ -28,6 +29,17 @@ const (
 	// MinPreKeyCount is the number of prekeys when the client will upload a new batch of prekeys to the WhatsApp servers.
 	MinPreKeyCount = 5
 )
+
+// PublicPreKeyBundle is a transport-safe representation of a Signal prekey bundle.
+type PublicPreKeyBundle struct {
+	RegistrationID uint32
+	IdentityKey    []byte
+	SignedPreKeyID uint32
+	SignedPreKey   []byte
+	Signature      []byte
+	PreKeyID       *uint32
+	PreKey         []byte
+}
 
 func (cli *Client) getServerPreKeyCount(ctx context.Context) (int, error) {
 	resp, err := cli.sendIQ(ctx, infoQuery{
@@ -68,7 +80,14 @@ func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 		cli.Log.Errorf("Failed to get prekeys to upload: %v", err)
 		return
 	}
+	if len(preKeys) == 0 {
+		cli.Log.Debugf("Skipping prekey upload request because there are no new prekeys to upload")
+		return
+	}
 	cli.Log.Infof("Uploading %d new prekeys to server", len(preKeys))
+	if cli.Store.IdentityKey != nil && cli.Store.IdentityKey.Pub != nil {
+		cli.Log.Infof("[PREKEY_UPLOAD_IDENTITY] identity_key=%x registration_id=%d transport_only=%v", cli.Store.IdentityKey.Pub[:8], cli.Store.RegistrationID, cli.Store.TransportOnly)
+	}
 	_, err = cli.sendIQ(ctx, infoQuery{
 		Namespace: "encrypt",
 		Type:      "set",
@@ -86,13 +105,20 @@ func (cli *Client) uploadPreKeys(ctx context.Context, initialUpload bool) {
 		return
 	}
 	cli.Log.Debugf("Got response to uploading prekeys")
-	err = cli.Store.PreKeys.MarkPreKeysAsUploaded(ctx, preKeys[len(preKeys)-1].KeyID)
+	err = markUploadedPreKeys(ctx, cli.Store.PreKeys, preKeys)
 	if err != nil {
 		cli.Log.Warnf("Failed to mark prekeys as uploaded: %v", err)
 		return
 	}
 	cli.lastPreKeyUpload = time.Now()
 	return
+}
+
+func markUploadedPreKeys(ctx context.Context, preKeyStore waStore.PreKeyStore, preKeys []*keys.PreKey) error {
+	if len(preKeys) == 0 {
+		return nil
+	}
+	return preKeyStore.MarkPreKeysAsUploaded(ctx, preKeys[len(preKeys)-1].KeyID)
 }
 
 func (cli *Client) fetchPreKeysNoError(ctx context.Context, retryDevices []types.JID) map[types.JID]*prekey.Bundle {
@@ -114,6 +140,49 @@ func (cli *Client) fetchPreKeysNoError(ctx context.Context, retryDevices []types
 		bundles[jid] = resp.bundle
 	}
 	return bundles
+}
+
+// FetchPublicPreKeyBundles fetches transport-safe prekey bundles for the given users.
+func (cli *Client) FetchPublicPreKeyBundles(ctx context.Context, users []types.JID) (map[types.JID]*PublicPreKeyBundle, error) {
+	resp, err := cli.fetchPreKeys(ctx, users)
+	if err != nil {
+		return nil, err
+	}
+
+	bundles := make(map[types.JID]*PublicPreKeyBundle, len(resp))
+	for jid, bundleResp := range resp {
+		if bundleResp.err != nil || bundleResp.bundle == nil {
+			continue
+		}
+		bundles[jid] = publicPreKeyBundleFromSignal(bundleResp.bundle)
+	}
+	return bundles, nil
+}
+
+func publicPreKeyBundleFromSignal(bundle *prekey.Bundle) *PublicPreKeyBundle {
+	result := &PublicPreKeyBundle{
+		RegistrationID: bundle.RegistrationID(),
+		SignedPreKeyID: bundle.SignedPreKeyID(),
+	}
+	if ik := bundle.IdentityKey(); ik != nil {
+		ikBytes := ik.PublicKey().PublicKey()
+		result.IdentityKey = append([]byte(nil), ikBytes[:]...)
+	}
+	if spk := bundle.SignedPreKey(); spk != nil {
+		spkBytes := spk.PublicKey()
+		result.SignedPreKey = append([]byte(nil), spkBytes[:]...)
+		sig := bundle.SignedPreKeySignature()
+		result.Signature = append([]byte(nil), sig[:]...)
+	}
+	if pk := bundle.PreKey(); pk != nil {
+		if pkID := bundle.PreKeyID(); pkID != nil {
+			id := pkID.Value
+			result.PreKeyID = &id
+		}
+		pkBytes := pk.PublicKey()
+		result.PreKey = append([]byte(nil), pkBytes[:]...)
+	}
+	return result
 }
 
 type preKeyResp struct {

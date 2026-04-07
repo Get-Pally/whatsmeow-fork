@@ -200,6 +200,16 @@ type AllStores interface {
 	AllGlobalStores
 }
 
+type CompanionStores struct {
+	Identities    IdentityStore
+	Sessions      SessionStore
+	SenderKeys    SenderKeyStore
+	AppStateKeys  AppStateSyncKeyStore
+	AppState      AppStateStore
+	MsgSecrets    MsgSecretStore
+	PrivacyTokens PrivacyTokenStore
+}
+
 type Device struct {
 	Log waLog.Logger
 
@@ -208,6 +218,9 @@ type Device struct {
 	SignedPreKey   *keys.PreKey
 	RegistrationID uint32
 	AdvSecretKey   []byte
+	// TransportOnly marks sessions where the server only transports WhatsApp stanzas
+	// and never owns the companion identity or signed-prekey private material.
+	TransportOnly bool
 
 	ID  *types.JID
 	LID types.JID
@@ -221,20 +234,14 @@ type Device struct {
 
 	FacebookUUID uuid.UUID
 
-	Initialized   bool
-	Identities    IdentityStore
-	Sessions      SessionStore
-	PreKeys       PreKeyStore
-	SenderKeys    SenderKeyStore
-	AppStateKeys  AppStateSyncKeyStore
-	AppState      AppStateStore
-	Contacts      ContactStore
-	ChatSettings  ChatSettingsStore
-	MsgSecrets    MsgSecretStore
-	PrivacyTokens PrivacyTokenStore
-	EventBuffer   EventBuffer
-	LIDs          LIDStore
-	Container     DeviceContainer
+	Initialized  bool
+	Companion    CompanionStores
+	PreKeys      PreKeyStore
+	Contacts     ContactStore
+	ChatSettings ChatSettingsStore
+	EventBuffer  EventBuffer
+	LIDs         LIDStore
+	Container    DeviceContainer
 }
 
 func (device *Device) GetJID() types.JID {

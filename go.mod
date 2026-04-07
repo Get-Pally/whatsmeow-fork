@@ -5,9 +5,11 @@ go 1.24.0
 toolchain go1.25.6
 
 require (
+	github.com/DATA-DOG/go-sqlmock v1.5.2
 	github.com/beeper/argo-go v1.1.2
 	github.com/coder/websocket v1.8.14
 	github.com/google/uuid v1.6.0
+	github.com/mattn/go-sqlite3 v1.14.33
 	github.com/rs/zerolog v1.34.0
 	go.mau.fi/libsignal v0.2.1
 	go.mau.fi/util v0.9.5

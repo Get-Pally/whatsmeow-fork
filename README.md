@@ -3,6 +3,10 @@
 
 whatsmeow is a Go library for the WhatsApp web multidevice API.
 
+## Pally Relay Fork
+
+This workspace contains relay-mode changes used by Pally's strict E2EE transport split. See [STRICT_E2EE_RELAY.md](STRICT_E2EE_RELAY.md) for the transport-only contract, data flow, and debugging rules for this fork.
+
 ## Discussion
 Matrix room: [#whatsmeow:maunium.net](https://matrix.to/#/#whatsmeow:maunium.net)
 

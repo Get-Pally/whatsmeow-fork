@@ -1,4 +1,4 @@
--- v0 -> v11 (compatible with v8+): Latest schema
+-- v0 -> v12 (compatible with v8+): Latest schema
 CREATE TABLE whatsmeow_device (
 	jid TEXT PRIMARY KEY,
 	lid TEXT,
@@ -6,6 +6,7 @@ CREATE TABLE whatsmeow_device (
 	facebook_uuid uuid,
 
 	registration_id BIGINT NOT NULL CHECK ( registration_id >= 0 AND registration_id < 4294967296 ),
+	transport_only BOOLEAN NOT NULL DEFAULT false,
 
 	noise_key    bytea NOT NULL CHECK ( length(noise_key) = 32 ),
 	identity_key bytea NOT NULL CHECK ( length(identity_key) = 32 ),

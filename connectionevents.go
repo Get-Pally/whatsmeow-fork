@@ -8,6 +8,7 @@ package whatsmeow
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
@@ -179,8 +180,14 @@ func (cli *Client) handleConnectSuccess(ctx context.Context, node *waBinary.Node
 	// so do this unconditionally for a few months to ensure everyone gets the row.
 	cli.StoreLIDPNMapping(ctx, cli.Store.GetLID(), cli.Store.GetJID())
 	go func() {
-		if dbCount, err := cli.Store.PreKeys.UploadedPreKeyCount(ctx); err != nil {
-			cli.Log.Errorf("Failed to get number of prekeys in database: %v", err)
+		if cli.Store.PreKeys == nil {
+			cli.Log.Infof("Pre-key check skipped: PreKeys store is nil (relay mode - external client owns pre-keys)")
+		} else if dbCount, err := cli.Store.PreKeys.UploadedPreKeyCount(ctx); err != nil {
+			if errors.Is(err, store.ErrTransportOnlyStoreOperation) {
+				cli.Log.Debugf("Pre-key check skipped: transport-only device store has no local pre-keys")
+			} else {
+				cli.Log.Errorf("Failed to get number of prekeys in database: %v", err)
+			}
 		} else if serverCount, err := cli.getServerPreKeyCount(ctx); err != nil {
 			cli.Log.Warnf("Failed to get number of prekeys on server: %v", err)
 		} else {
