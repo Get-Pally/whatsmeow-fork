@@ -76,7 +76,7 @@ func TestValidateRelayTransportConfigurationAllowsLinkedReconnectWithoutBootstra
 }
 
 func TestAllowRelayTransportNotificationFallback(t *testing.T) {
-	for _, notifType := range []string{"disappearing_mode", "mex", "picture", "status"} {
+	for _, notifType := range []string{"disappearing_mode", "mex", "picture", "status", "link_code_companion_reg"} {
 		if !allowRelayTransportNotificationFallback(notifType) {
 			t.Fatalf("expected %s notifications to allow safe relay fallback", notifType)
 		}

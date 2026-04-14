@@ -523,7 +523,7 @@ func allowRelayTransportNotificationFallback(notifType string) bool {
 	// These notification types only drive transient event dispatch in upstream whatsmeow.
 	// Allowing fallback here preserves the normal ack behavior in relay mode without
 	// reintroducing local app-state/history ownership.
-	case "disappearing_mode", "mex", "picture", "status", "newsletter":
+	case "disappearing_mode", "mex", "picture", "status", "newsletter", "link_code_companion_reg":
 		return true
 	default:
 		return false
