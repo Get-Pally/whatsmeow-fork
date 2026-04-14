@@ -93,6 +93,35 @@ func (cli *Client) Upload(ctx context.Context, plaintext []byte, appInfo MediaTy
 	return
 }
 
+// UploadPreEncrypted uploads media that has already been encrypted by another client.
+//
+// The caller must provide the original plaintext metadata and the encrypted file hash that
+// WhatsApp uses as the upload token. This is the relay-safe counterpart to [Upload], which
+// performs encryption locally before uploading.
+func (cli *Client) UploadPreEncrypted(
+	ctx context.Context,
+	encryptedData []byte,
+	appInfo MediaType,
+	mediaKey, fileEncSHA256, fileSHA256 []byte,
+	fileLength uint64,
+) (resp UploadResponse, err error) {
+	resp.FileLength = fileLength
+	resp.MediaKey = append([]byte(nil), mediaKey...)
+	resp.FileEncSHA256 = append([]byte(nil), fileEncSHA256...)
+	resp.FileSHA256 = append([]byte(nil), fileSHA256...)
+
+	err = cli.rawUpload(
+		ctx,
+		bytes.NewReader(encryptedData),
+		uint64(len(encryptedData)),
+		resp.FileEncSHA256,
+		appInfo,
+		false,
+		&resp,
+	)
+	return
+}
+
 // UploadReader uploads the given attachment to WhatsApp servers.
 //
 // This is otherwise identical to [Upload], but it reads the plaintext from an [io.Reader] instead of a byte slice.
