@@ -140,9 +140,9 @@ The app decrypts history sync notifications and blobs locally. The server must n
 The fork does not send protocol receipts (`hist_sync` or `peer_msg`) for peer messages. Receipt timing is controlled by the backend:
 
 - `peer_msg` receipt: sent by the backend relay layer (`handleRelayMessage`) after durable queueing of the ciphertext.
-- `hist_sync` receipt: sent by the backend (`sendDeferredHistSyncReceipt`) only after the app reports `result_type = "history_sync_processed"` in its process results. This prevents spurious `hist_sync` receipts for non-history peer messages (AppStateSyncKeyShare, LID migration sync, etc.).
+- `hist_sync` receipt: sent by the backend only after the app reports `result_type = "history_sync_processed"` in its process results. The backend persists pending `hist_sync` receipts on the message row and drains them after reconnect, which prevents both spurious receipts for non-history peer messages and receipt loss when transport is briefly unavailable.
 
-If CDN download fails for a history sync blob, the app sends a `HISTORY_SYNC_CHUNK_RETRY` peer message to re-request the chunk. The fork deduplicates these via `retriedChunkNotificationIDs`.
+If CDN download fails for a history sync blob, the app sends a `HISTORY_SYNC_CHUNK_RETRY` peer message to re-request the chunk. Duplicate retry requests are suppressed by the app via its `retriedChunkNotificationIDs` window.
 
 ### 8. Prekey Lifecycle
 
